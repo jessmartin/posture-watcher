@@ -1,0 +1,15 @@
+[package]
+name = "posture-watcher"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+anyhow = "1.0"
+apriltag = "0.4"
+apriltag-image = "0.1"
+clap = { version = "4.5", features = ["derive"] }
+image = "0.24"
+imageproc = "0.23"
+kornia-apriltag = "0.1.10"
+serialport = "4.9"
+walkdir = "2.5"
