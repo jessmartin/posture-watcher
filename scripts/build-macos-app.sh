@@ -15,7 +15,7 @@ cargo build
 rm -rf "$APP_DIR"
 mkdir -p "$MACOS" "$RESOURCES"
 
-swiftc -parse-as-library macos/PostureWatcherLauncher.swift \
+swiftc macos/PostureWatcherLauncher.swift \
   -framework AppKit \
   -framework AVFoundation \
   -o "$MACOS/PostureWatcherLauncher"

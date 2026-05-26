@@ -52,6 +52,14 @@ open "target/macos/Posture Watcher.app"
 
 The app should prompt for Camera permission as `Posture Watcher`. It captures frames natively and runs the bundled Rust binary in `live-file` mode. Runtime outputs go under `~/Library/Application Support/Posture Watcher/`.
 
+Watch the app log:
+
+```sh
+scripts/watch-macos-app-log.sh
+```
+
+After approving the Camera prompt, the log should show camera selection, frame writes, analyzer startup, and Badger ACKs.
+
 Optional environment overrides:
 
 ```sh

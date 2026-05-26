@@ -3,7 +3,6 @@ import AppKit
 import CoreImage
 import Foundation
 
-@main
 final class PostureWatcherLauncher: NSObject, NSApplicationDelegate, AVCaptureVideoDataOutputSampleBufferDelegate {
     private var process: Process?
     private let session = AVCaptureSession()
@@ -11,24 +10,36 @@ final class PostureWatcherLauncher: NSObject, NSApplicationDelegate, AVCaptureVi
     private let ciContext = CIContext()
     private var lastWrite = Date.distantPast
     private var frameURL: URL!
+    private var logURL: URL!
     private var intervalSeconds = 30.0
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        do {
+            let supportURL = try appSupportURL()
+            logURL = supportURL.appendingPathComponent("posture-watcher.log")
+            log("app launched")
+        } catch {
+            fputs("Posture Watcher log setup failed: \(error.localizedDescription)\n", stderr)
+        }
         requestCameraThenRun()
     }
 
     func applicationWillTerminate(_ notification: Notification) {
+        log("app terminating")
         session.stopRunning()
         process?.terminate()
     }
 
     private func requestCameraThenRun() {
+        log("camera authorization status: \(AVCaptureDevice.authorizationStatus(for: .video).rawValue)")
         switch AVCaptureDevice.authorizationStatus(for: .video) {
         case .authorized:
             startCaptureAndAnalyzer()
         case .notDetermined:
+            log("requesting camera access")
             AVCaptureDevice.requestAccess(for: .video) { granted in
                 DispatchQueue.main.async {
+                    self.log("camera access prompt result: \(granted)")
                     if granted {
                         self.startCaptureAndAnalyzer()
                     } else {
@@ -51,10 +62,15 @@ final class PostureWatcherLauncher: NSObject, NSApplicationDelegate, AVCaptureVi
             let supportURL = try appSupportURL()
             frameURL = supportURL.appendingPathComponent("latest-frame.jpg")
             intervalSeconds = Double(ProcessInfo.processInfo.environment["POSTURE_WATCHER_INTERVAL_SECS"] ?? "30") ?? 30.0
+            log("support directory: \(supportURL.path)")
+            log("frame path: \(frameURL.path)")
+            log("capture interval: \(intervalSeconds)s")
             try configureCapture()
             runPostureWatcher(inputURL: frameURL, supportURL: supportURL)
             session.startRunning()
+            log("AVFoundation session started")
         } catch {
+            log("startup failed: \(error.localizedDescription)")
             showMessage(error.localizedDescription)
             NSApp.terminate(nil)
         }
@@ -67,6 +83,7 @@ final class PostureWatcherLauncher: NSObject, NSApplicationDelegate, AVCaptureVi
         guard let device = selectedCamera() else {
             throw AppError.message("Could not find the requested camera.")
         }
+        log("selected camera: \(device.localizedName)")
         let input = try AVCaptureDeviceInput(device: device)
         guard session.canAddInput(input) else {
             throw AppError.message("Could not add camera input.")
@@ -95,6 +112,7 @@ final class PostureWatcherLauncher: NSObject, NSApplicationDelegate, AVCaptureVi
             mediaType: .video,
             position: .unspecified
         )
+        log("available cameras: \(discovery.devices.map { $0.localizedName }.joined(separator: ", "))")
         return discovery.devices.first { $0.localizedName == requested }
             ?? discovery.devices.first { $0.localizedName.contains(requested) }
             ?? AVCaptureDevice.default(for: .video)
@@ -125,6 +143,7 @@ final class PostureWatcherLauncher: NSObject, NSApplicationDelegate, AVCaptureVi
             "--out-dir", outDir
         ]
         task.currentDirectoryURL = URL(fileURLWithPath: bundle.resourcePath ?? NSHomeDirectory())
+        log("launching analyzer: \(binaryPath) \(task.arguments?.joined(separator: " ") ?? "")")
 
         let pipe = Pipe()
         task.standardOutput = pipe
@@ -134,10 +153,12 @@ final class PostureWatcherLauncher: NSObject, NSApplicationDelegate, AVCaptureVi
             let data = handle.availableData
             guard !data.isEmpty, let text = String(data: data, encoding: .utf8) else { return }
             fputs(text, stderr)
+            self.log(text.trimmingCharacters(in: .whitespacesAndNewlines))
         }
 
         task.terminationHandler = { _ in
             DispatchQueue.main.async {
+                self.log("analyzer exited with status \(task.terminationStatus)")
                 pipe.fileHandleForReading.readabilityHandler = nil
                 NSApp.terminate(nil)
             }
@@ -146,7 +167,9 @@ final class PostureWatcherLauncher: NSObject, NSApplicationDelegate, AVCaptureVi
         do {
             try task.run()
             process = task
+            log("analyzer process started")
         } catch {
+            log("analyzer launch failed: \(error.localizedDescription)")
             showMessage("Could not start posture-watcher: \(error.localizedDescription)")
             NSApp.terminate(nil)
         }
@@ -171,8 +194,11 @@ final class PostureWatcherLauncher: NSObject, NSApplicationDelegate, AVCaptureVi
             } else {
                 try FileManager.default.moveItem(at: tmpURL, to: frameURL)
             }
+            log("wrote frame: \(frameURL.path)")
         } catch {
-            fputs("Posture Watcher frame write failed: \(error.localizedDescription)\n", stderr)
+            let message = "Posture Watcher frame write failed: \(error.localizedDescription)"
+            log(message)
+            fputs(message + "\n", stderr)
         }
     }
 
@@ -190,11 +216,34 @@ final class PostureWatcherLauncher: NSObject, NSApplicationDelegate, AVCaptureVi
     }
 
     private func showMessage(_ text: String) {
+        log("alert: \(text)")
         let alert = NSAlert()
         alert.messageText = "Posture Watcher"
         alert.informativeText = text
         alert.alertStyle = .warning
         alert.runModal()
+    }
+
+    private func log(_ text: String) {
+        let timestamp = ISO8601DateFormatter().string(from: Date())
+        let line = "[\(timestamp)] \(text)\n"
+        fputs(line, stderr)
+
+        guard let logURL else { return }
+        do {
+            if !FileManager.default.fileExists(atPath: logURL.path) {
+                try line.write(to: logURL, atomically: true, encoding: .utf8)
+                return
+            }
+            let handle = try FileHandle(forWritingTo: logURL)
+            try handle.seekToEnd()
+            if let data = line.data(using: .utf8) {
+                try handle.write(contentsOf: data)
+            }
+            try handle.close()
+        } catch {
+            fputs("Posture Watcher log write failed: \(error.localizedDescription)\n", stderr)
+        }
     }
 }
 
@@ -207,3 +256,10 @@ enum AppError: LocalizedError {
         }
     }
 }
+
+let app = NSApplication.shared
+let delegate = PostureWatcherLauncher()
+app.delegate = delegate
+app.setActivationPolicy(.regular)
+app.activate(ignoringOtherApps: true)
+app.run()
