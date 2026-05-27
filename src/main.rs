@@ -127,6 +127,8 @@ enum Commands {
         out_dir: PathBuf,
         #[arg(long)]
         baseline: Option<PathBuf>,
+        #[arg(long, value_enum, default_value_t = DeskModeOverride::Auto)]
+        mode: DeskModeOverride,
         #[arg(long)]
         no_badger: bool,
     },
@@ -148,6 +150,8 @@ enum Commands {
         out_dir: PathBuf,
         #[arg(long)]
         baseline: Option<PathBuf>,
+        #[arg(long, value_enum, default_value_t = DeskModeOverride::Auto)]
+        mode: DeskModeOverride,
         #[arg(long)]
         no_badger: bool,
     },
@@ -239,6 +243,31 @@ impl DetectedDeskMode {
             Self::Sitting => "sitting",
             Self::Standing => "standing",
             Self::Unknown => "unknown",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+enum DeskModeOverride {
+    Auto,
+    Sitting,
+    Standing,
+}
+
+impl DeskModeOverride {
+    fn estimate(self, detections: &[DetectionPoint]) -> ModeEstimate {
+        match self {
+            Self::Auto => estimate_mode_from_detections(detections),
+            Self::Sitting => ModeEstimate::new(
+                DetectedDeskMode::Sitting,
+                100,
+                "manual override from Mode picker",
+            ),
+            Self::Standing => ModeEstimate::new(
+                DetectedDeskMode::Standing,
+                100,
+                "manual override from Mode picker",
+            ),
         }
     }
 }
@@ -455,6 +484,7 @@ fn main() -> Result<()> {
             rotate,
             out_dir,
             baseline,
+            mode,
             no_badger,
         } => live(
             &camera,
@@ -468,6 +498,7 @@ fn main() -> Result<()> {
             rotate,
             &out_dir,
             baseline.as_deref(),
+            mode,
             !no_badger,
         ),
         Commands::LiveFile {
@@ -479,6 +510,7 @@ fn main() -> Result<()> {
             rotate,
             out_dir,
             baseline,
+            mode,
             no_badger,
         } => live_file(
             &input,
@@ -489,6 +521,7 @@ fn main() -> Result<()> {
             rotate,
             &out_dir,
             baseline.as_deref(),
+            mode,
             !no_badger,
         ),
         Commands::Doctor {
@@ -715,6 +748,7 @@ fn live(
     rotate: FrameRotation,
     out_dir: &Path,
     baseline_path: Option<&Path>,
+    mode_override: DeskModeOverride,
     send_badger_enabled: bool,
 ) -> Result<()> {
     fs::create_dir_all(out_dir).with_context(|| format!("creating {}", out_dir.display()))?;
@@ -743,6 +777,7 @@ fn live(
             no_person_after,
             rotate,
             baseline_path,
+            mode_override,
         ) {
             Ok(FrameAnalysisOutcome::Posture) => {}
             Ok(FrameAnalysisOutcome::MissingRequiredTags) => {}
@@ -764,6 +799,7 @@ fn live_file(
     rotate: FrameRotation,
     out_dir: &Path,
     baseline_path: Option<&Path>,
+    mode_override: DeskModeOverride,
     send_badger_enabled: bool,
 ) -> Result<()> {
     fs::create_dir_all(out_dir).with_context(|| format!("creating {}", out_dir.display()))?;
@@ -794,6 +830,7 @@ fn live_file(
             no_person_after,
             rotate,
             baseline_path,
+            mode_override,
         ) {
             Ok(FrameAnalysisOutcome::Posture) => {}
             Ok(FrameAnalysisOutcome::MissingRequiredTags) => {}
@@ -815,6 +852,7 @@ fn analyze_frame_file(
     no_person_after: Duration,
     rotate: FrameRotation,
     baseline_path: Option<&Path>,
+    mode_override: DeskModeOverride,
 ) -> Result<FrameAnalysisOutcome> {
     let img = image::open(input).with_context(|| format!("opening {}", input.display()))?;
     let img = apply_rotation(img, rotate);
@@ -822,7 +860,7 @@ fn analyze_frame_file(
     let tag_debug = out_dir.join("latest-tags.png");
     write_tag_debug_image(&img, &detections, &tag_debug)?;
     emit_tag_status(&detections);
-    let mode = estimate_mode_from_detections(&detections);
+    let mode = mode_override.estimate(&detections);
     emit_mode_status(&mode);
     let placement = estimate_placement_from_detections(&detections);
     emit_placement_status(&placement);
@@ -2654,6 +2692,22 @@ mod tests {
             estimate_mode_from_landmarks(&sitting).mode,
             DetectedDeskMode::Sitting
         );
+    }
+
+    #[test]
+    fn mode_override_forces_live_mode() {
+        let detections = vec![
+            test_detection(SHOULDER_ID, 50.0, 20.0),
+            test_detection(HIP_ID, 56.0, 110.0),
+        ];
+        assert_eq!(
+            DeskModeOverride::Auto.estimate(&detections).mode,
+            DetectedDeskMode::Standing
+        );
+        let sitting = DeskModeOverride::Sitting.estimate(&detections);
+        assert_eq!(sitting.mode, DetectedDeskMode::Sitting);
+        assert_eq!(sitting.confidence, 100);
+        assert!(sitting.detail.contains("manual override"));
     }
 
     #[test]

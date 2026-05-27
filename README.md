@@ -179,6 +179,8 @@ The important idea is trend feedback over time. The app should help you notice s
 
 The macOS app shows a first-pass auto-detected Sitting/Standing estimate when shoulder and hip tags are visible. The current heuristic treats a mostly vertical shoulder-to-hip axis as standing, a mostly horizontal shoulder-to-hip axis as sitting, and ambiguous or missing hip geometry as unknown.
 
+The Mode picker is also a live override now. Leave it on `Auto` when the hip tag is placed well; choose `Sitting` or `Standing` when you want the rolling average and baseline drift to use that mode explicitly. The app restarts the analyzer when this changes, but camera capture keeps running.
+
 Keep using the Mode picker as the ground-truth label while saving samples. The saved `latest-tags.txt` reports include:
 
 ```text
@@ -247,6 +249,7 @@ cargo run -- live --capture-backend ffmpeg --ffmpeg-input "0:none"
 cargo run -- live --capture-timeout-secs 5
 cargo run -- live --rotate none
 cargo run -- live --baseline "$HOME/Library/Application Support/Posture Watcher/calibration/baseline.txt"
+cargo run -- live --mode sitting
 ```
 
 Restore the original Badger launcher:

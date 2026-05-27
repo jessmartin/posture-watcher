@@ -404,6 +404,7 @@ final class PostureWatcherLauncher: NSObject, NSApplicationDelegate, AVCaptureVi
         guard let title = sender.selectedItem?.title else { return }
         UserDefaults.standard.set(title, forKey: "PostureMode")
         log("posture mode changed: \(title)")
+        restartAnalyzerForModeChange()
     }
 
     @objc private func openStickerSheet(_ sender: NSButton) {
@@ -593,6 +594,20 @@ final class PostureWatcherLauncher: NSObject, NSApplicationDelegate, AVCaptureVi
             ?? "Logitech Webcam C930e"
     }
 
+    private func analyzerModeArgument() -> String {
+        let title = modePopup?.selectedItem?.title
+            ?? UserDefaults.standard.string(forKey: "PostureMode")
+            ?? "Auto"
+        switch title {
+        case "Sitting":
+            return "sitting"
+        case "Standing":
+            return "standing"
+        default:
+            return "auto"
+        }
+    }
+
     private func runPostureWatcher(inputURL: URL, supportURL: URL) {
         let bundle = Bundle.main
         let binaryPath: String
@@ -611,6 +626,7 @@ final class PostureWatcherLauncher: NSObject, NSApplicationDelegate, AVCaptureVi
         let noPersonAfter = env["POSTURE_WATCHER_NO_PERSON_AFTER_SECS"] ?? "30"
         let rotation = env["POSTURE_WATCHER_ROTATE"] ?? "ccw90"
         let outDir = supportURL.appendingPathComponent("analysis").path
+        let postureMode = analyzerModeArgument()
 
         let task = Process()
         task.executableURL = URL(fileURLWithPath: binaryPath)
@@ -622,7 +638,8 @@ final class PostureWatcherLauncher: NSObject, NSApplicationDelegate, AVCaptureVi
             "--interval-secs", interval,
             "--no-person-after-secs", noPersonAfter,
             "--rotate", rotation,
-            "--out-dir", outDir
+            "--out-dir", outDir,
+            "--mode", postureMode
         ]
         if env["POSTURE_WATCHER_NO_BADGER"] == "1" || !FileManager.default.fileExists(atPath: port) {
             arguments.append("--no-badger")
@@ -664,6 +681,22 @@ final class PostureWatcherLauncher: NSObject, NSApplicationDelegate, AVCaptureVi
             log("analyzer launch failed: \(error.localizedDescription)")
             showMessage("Could not start posture-watcher: \(error.localizedDescription)")
             NSApp.terminate(nil)
+        }
+    }
+
+    private func restartAnalyzerForModeChange() {
+        guard frameURL != nil else { return }
+        do {
+            let supportURL = try appSupportURL()
+            process?.terminationHandler = nil
+            process?.terminate()
+            process = nil
+            analyzerOutputBuffer = ""
+            previewView.applyDisplayPayload("DISPLAY,M,restarting")
+            runPostureWatcher(inputURL: frameURL, supportURL: supportURL)
+        } catch {
+            log("analyzer restart failed: \(error.localizedDescription)")
+            showMessage(error.localizedDescription)
         }
     }
 
