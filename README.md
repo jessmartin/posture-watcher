@@ -250,6 +250,7 @@ cargo run -- live --capture-timeout-secs 5
 cargo run -- live --rotate none
 cargo run -- live --baseline "$HOME/Library/Application Support/Posture Watcher/calibration/baseline.txt"
 cargo run -- live --mode sitting
+cargo run -- live-file --input "artifacts/tagged-samples/<sample>-tagged.png" --rotate none --once --no-badger
 ```
 
 Restore the original Badger launcher:

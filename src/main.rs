@@ -154,6 +154,8 @@ enum Commands {
         mode: DeskModeOverride,
         #[arg(long)]
         no_badger: bool,
+        #[arg(long)]
+        once: bool,
     },
     /// Check camera, Badger, sticker/sample, and serial setup.
     Doctor {
@@ -512,6 +514,7 @@ fn main() -> Result<()> {
             baseline,
             mode,
             no_badger,
+            once,
         } => live_file(
             &input,
             &port,
@@ -523,6 +526,7 @@ fn main() -> Result<()> {
             baseline.as_deref(),
             mode,
             !no_badger,
+            once,
         ),
         Commands::Doctor {
             camera,
@@ -801,6 +805,7 @@ fn live_file(
     baseline_path: Option<&Path>,
     mode_override: DeskModeOverride,
     send_badger_enabled: bool,
+    once: bool,
 ) -> Result<()> {
     fs::create_dir_all(out_dir).with_context(|| format!("creating {}", out_dir.display()))?;
     let mut windows = ModeRollingWindows::new(Duration::from_secs(window_secs));
@@ -815,6 +820,9 @@ fn live_file(
 
     loop {
         if !input.exists() {
+            if once {
+                bail!("input does not exist: {}", input.display());
+            }
             eprintln!("waiting for {}", input.display());
             thread::sleep(Duration::from_secs(interval_secs));
             continue;
@@ -838,8 +846,13 @@ fn live_file(
             Err(err) => eprintln!("{}: {err:#}", input.display()),
         }
 
+        if once {
+            break;
+        }
+
         thread::sleep(Duration::from_secs(interval_secs));
     }
+    Ok(())
 }
 
 fn analyze_frame_file(
@@ -2782,6 +2795,18 @@ mod tests {
         assert!(baseline
             .drift_for(DetectedDeskMode::Standing, &posture)
             .is_none());
+    }
+
+    #[test]
+    fn badger_payload_includes_baseline_note() {
+        let mut posture = test_posture_frame(47.2, 18.0);
+        posture.display_points = vec![
+            (SHOULDER_ID, Point::new(204.0, 64.0)),
+            (C7_ID, Point::new(126.0, 70.0)),
+            (EAR_ID, Point::new(32.0, 80.0)),
+        ];
+        let payload = badger_payload(&posture, Some("sit -3deg"));
+        assert_eq!(payload.trim(), "P,3,204,64,126,70,32,80,sit -3deg");
     }
 
     #[test]
