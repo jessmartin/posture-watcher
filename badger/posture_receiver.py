@@ -4,7 +4,7 @@ import time
 import badger2040
 
 
-PROTOCOL = "POSTURE_WATCHER_BADGER_V1"
+PROTOCOL = "POSTURE_WATCHER_BADGER_V2"
 WIDTH = badger2040.WIDTH
 HEIGHT = badger2040.HEIGHT
 
@@ -26,6 +26,14 @@ def draw_waiting():
     display.line(18, cy - 10, 18, cy + 10)
     display.line(WIDTH - 18, cy - 10, WIDTH - 18, cy + 10)
     display.text("waiting", 8, 8, 0.45)
+    display.update()
+
+
+def draw_message(message):
+    clear()
+    display.thickness(1)
+    display.rectangle(0, 0, WIDTH, HEIGHT)
+    display.text(message[:18], 12, 44, 0.8)
     display.update()
 
 
@@ -59,8 +67,12 @@ def draw_points(points, note=""):
 
 def parse_payload(line):
     parts = line.strip().split(",")
+    if not parts:
+        return "", None, ""
+    if parts[0] == "M":
+        return "M", None, ",".join(parts[1:]).strip() or "No person found"
     if len(parts) < 4 or parts[0] != "P":
-        return None, ""
+        return "", None, ""
     try:
         n = int(parts[1])
         coords = parts[2 : 2 + n * 2]
@@ -70,9 +82,9 @@ def parse_payload(line):
             y = max(0, min(HEIGHT - 1, int(coords[i + 1])))
             points.append((x, y))
         note = parts[2 + n * 2] if len(parts) > 2 + n * 2 else ""
-        return points, note
+        return "P", points, note
     except Exception:
-        return None, ""
+        return "", None, ""
 
 
 def ack(message):
@@ -95,8 +107,11 @@ while True:
     if line == "PING":
         ack("OK," + PROTOCOL)
         continue
-    points, note = parse_payload(line)
-    if points:
+    kind, points, note = parse_payload(line)
+    if kind == "M":
+        draw_message(note)
+        ack("OK,M")
+    elif kind == "P" and points:
         draw_points(points, note)
         ack("OK,P,{}".format(len(points)))
     else:

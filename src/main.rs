@@ -17,12 +17,15 @@ use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::thread;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime};
 use walkdir::WalkDir;
 
 const BADGER_WIDTH: i32 = 296;
 const BADGER_HEIGHT: i32 = 128;
-const BADGER_PROTOCOL: &str = "POSTURE_WATCHER_BADGER_V1";
+const BADGER_PROTOCOL: &str = "POSTURE_WATCHER_BADGER_V2";
+const DEFAULT_LIVE_INTERVAL_SECS: u64 = 5;
+const DEFAULT_NO_PERSON_AFTER_SECS: u64 = 30;
+const NO_PERSON_MESSAGE: &str = "No person found";
 
 const EAR_ID: usize = 0;
 const C7_ID: usize = 1;
@@ -60,6 +63,8 @@ enum Commands {
         input: PathBuf,
         #[arg(long)]
         annotated_out: Option<PathBuf>,
+        #[arg(long, value_enum, default_value_t = FrameRotation::None)]
+        rotate: FrameRotation,
         #[arg(long)]
         send_badger: bool,
         #[arg(long, default_value = "/dev/cu.usbmodem83201")]
@@ -71,6 +76,8 @@ enum Commands {
         input_dir: PathBuf,
         #[arg(long, default_value = "artifacts/analysis")]
         out_dir: PathBuf,
+        #[arg(long, value_enum, default_value_t = FrameRotation::None)]
+        rotate: FrameRotation,
         #[arg(long)]
         send_badger: bool,
         #[arg(long, default_value = "/dev/cu.usbmodem83201")]
@@ -94,8 +101,12 @@ enum Commands {
         port: String,
         #[arg(long, default_value_t = 120)]
         window_secs: u64,
-        #[arg(long, default_value_t = 30)]
+        #[arg(long, default_value_t = DEFAULT_LIVE_INTERVAL_SECS)]
         interval_secs: u64,
+        #[arg(long, default_value_t = DEFAULT_NO_PERSON_AFTER_SECS)]
+        no_person_after_secs: u64,
+        #[arg(long, value_enum, default_value_t = FrameRotation::Ccw90)]
+        rotate: FrameRotation,
         #[arg(long, default_value = "artifacts/live")]
         out_dir: PathBuf,
         #[arg(long)]
@@ -109,8 +120,12 @@ enum Commands {
         port: String,
         #[arg(long, default_value_t = 120)]
         window_secs: u64,
-        #[arg(long, default_value_t = 30)]
+        #[arg(long, default_value_t = DEFAULT_LIVE_INTERVAL_SECS)]
         interval_secs: u64,
+        #[arg(long, default_value_t = DEFAULT_NO_PERSON_AFTER_SECS)]
+        no_person_after_secs: u64,
+        #[arg(long, value_enum, default_value_t = FrameRotation::Ccw90)]
+        rotate: FrameRotation,
         #[arg(long, default_value = "artifacts/live-file")]
         out_dir: PathBuf,
         #[arg(long)]
@@ -152,6 +167,13 @@ enum Commands {
         #[arg(long, value_enum, default_value_t = DemoPose::Neutral)]
         pose: DemoPose,
     },
+    /// Send a status message to the Badger.
+    SendStatus {
+        #[arg(long, default_value = "/dev/cu.usbmodem83201")]
+        port: String,
+        #[arg(long, default_value = "No person found")]
+        message: String,
+    },
 }
 
 #[derive(Debug, Clone, ValueEnum)]
@@ -165,6 +187,14 @@ enum CaptureBackend {
     Auto,
     Imagesnap,
     Ffmpeg,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+enum FrameRotation {
+    None,
+    Cw90,
+    Ccw90,
+    Deg180,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -201,6 +231,18 @@ struct RollingWindow {
     frames: VecDeque<(Instant, PostureFrame)>,
 }
 
+#[derive(Debug)]
+struct MissingPersonState {
+    first_missing: Option<Instant>,
+    message_sent: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FrameAnalysisOutcome {
+    Posture,
+    MissingRequiredTags,
+}
+
 fn main() -> Result<()> {
     let cli = Cli::parse();
     match cli.command {
@@ -213,11 +255,13 @@ fn main() -> Result<()> {
         Commands::Analyze {
             input,
             annotated_out,
+            rotate,
             send_badger,
             port,
         } => {
             let img =
                 image::open(&input).with_context(|| format!("opening {}", input.display()))?;
+            let img = apply_rotation(img, rotate);
             let detections = detect_tags(&img)?;
             let posture = posture_from_detections(&detections)?;
             print_posture(&input, &posture);
@@ -233,6 +277,7 @@ fn main() -> Result<()> {
         Commands::RunSamples {
             input_dir,
             out_dir,
+            rotate,
             send_badger,
             port,
             window_secs,
@@ -240,6 +285,7 @@ fn main() -> Result<()> {
         } => run_samples(
             &input_dir,
             &out_dir,
+            rotate,
             send_badger,
             &port,
             window_secs,
@@ -253,6 +299,8 @@ fn main() -> Result<()> {
             port,
             window_secs,
             interval_secs,
+            no_person_after_secs,
+            rotate,
             out_dir,
             no_badger,
         } => live(
@@ -263,6 +311,8 @@ fn main() -> Result<()> {
             &port,
             window_secs,
             interval_secs,
+            Duration::from_secs(no_person_after_secs),
+            rotate,
             &out_dir,
             !no_badger,
         ),
@@ -271,6 +321,8 @@ fn main() -> Result<()> {
             port,
             window_secs,
             interval_secs,
+            no_person_after_secs,
+            rotate,
             out_dir,
             no_badger,
         } => live_file(
@@ -278,6 +330,8 @@ fn main() -> Result<()> {
             &port,
             window_secs,
             interval_secs,
+            Duration::from_secs(no_person_after_secs),
+            rotate,
             &out_dir,
             !no_badger,
         ),
@@ -300,6 +354,7 @@ fn main() -> Result<()> {
         Commands::InstallBadger { port } => install_badger(&port),
         Commands::RestoreBadger { port, backup } => restore_badger(&port, backup.as_deref()),
         Commands::SendDemo { port, pose } => send_demo(&port, pose),
+        Commands::SendStatus { port, message } => send_badger_message(&port, &message),
     }
 }
 
@@ -408,6 +463,7 @@ fn annotate_samples(input_dir: &Path, out_dir: &Path, tag_px: u32) -> Result<()>
 fn run_samples(
     input_dir: &Path,
     out_dir: &Path,
+    rotate: FrameRotation,
     send_badger_enabled: bool,
     port: &str,
     window_secs: u64,
@@ -421,6 +477,7 @@ fn run_samples(
     }
     for path in files {
         let img = image::open(&path).with_context(|| format!("opening {}", path.display()))?;
+        let img = apply_rotation(img, rotate);
         let detections = detect_tags(&img)?;
         let posture = posture_from_detections(&detections)?;
         window.push(posture);
@@ -433,7 +490,7 @@ fn run_samples(
         write_debug_image(&img, &detections, &avg, &out)?;
         println!("wrote {}", out.display());
         if send_badger_enabled {
-            send_to_badger(port, &avg)?;
+            publish_posture(port, &avg, true)?;
             thread::sleep(Duration::from_millis(delay_ms));
         }
     }
@@ -448,13 +505,16 @@ fn live(
     port: &str,
     window_secs: u64,
     interval_secs: u64,
+    no_person_after: Duration,
+    rotate: FrameRotation,
     out_dir: &Path,
     send_badger_enabled: bool,
 ) -> Result<()> {
     fs::create_dir_all(out_dir).with_context(|| format!("creating {}", out_dir.display()))?;
     let mut window = RollingWindow::new(Duration::from_secs(window_secs));
+    let mut missing_person = MissingPersonState::new();
     println!(
-        "starting live capture from {camera}; press Ctrl-C to stop; interval={}s window={}s",
+        "starting live capture from {camera}; press Ctrl-C to stop; interval={}s window={}s rotate={rotate:?}",
         interval_secs, window_secs
     );
     loop {
@@ -465,23 +525,20 @@ fn live(
             out_dir,
             capture_timeout,
         )?;
-        let img =
-            image::open(&capture).with_context(|| format!("opening {}", capture.display()))?;
-        let detections = detect_tags(&img)?;
-        match posture_from_detections(&detections) {
-            Ok(posture) => {
-                window.push(posture);
-                if let Some(avg) = window.average() {
-                    print_posture(&capture, &avg);
-                    let debug = out_dir.join("latest-analysis.png");
-                    write_debug_image(&img, &detections, &avg, &debug)?;
-                    if send_badger_enabled {
-                        send_to_badger(port, &avg)?;
-                    }
-                }
-            }
+        match analyze_frame_file(
+            &capture,
+            out_dir,
+            &mut window,
+            &mut missing_person,
+            send_badger_enabled,
+            port,
+            no_person_after,
+            rotate,
+        ) {
+            Ok(FrameAnalysisOutcome::Posture) => {}
+            Ok(FrameAnalysisOutcome::MissingRequiredTags) => {}
             Err(err) => {
-                eprintln!("{}: {err}", capture.display());
+                eprintln!("{}: {err:#}", capture.display());
             }
         }
         thread::sleep(Duration::from_secs(interval_secs));
@@ -493,13 +550,16 @@ fn live_file(
     port: &str,
     window_secs: u64,
     interval_secs: u64,
+    no_person_after: Duration,
+    rotate: FrameRotation,
     out_dir: &Path,
     send_badger_enabled: bool,
 ) -> Result<()> {
     fs::create_dir_all(out_dir).with_context(|| format!("creating {}", out_dir.display()))?;
     let mut window = RollingWindow::new(Duration::from_secs(window_secs));
+    let mut missing_person = MissingPersonState::new();
     println!(
-        "starting live-file from {}; press Ctrl-C to stop; interval={}s window={}s",
+        "starting live-file from {}; press Ctrl-C to stop; interval={}s window={}s rotate={rotate:?}",
         input.display(),
         interval_secs,
         window_secs
@@ -512,8 +572,18 @@ fn live_file(
             continue;
         }
 
-        match analyze_frame_file(input, out_dir, &mut window, send_badger_enabled, port) {
-            Ok(()) => {}
+        match analyze_frame_file(
+            input,
+            out_dir,
+            &mut window,
+            &mut missing_person,
+            send_badger_enabled,
+            port,
+            no_person_after,
+            rotate,
+        ) {
+            Ok(FrameAnalysisOutcome::Posture) => {}
+            Ok(FrameAnalysisOutcome::MissingRequiredTags) => {}
             Err(err) => eprintln!("{}: {err:#}", input.display()),
         }
 
@@ -525,21 +595,53 @@ fn analyze_frame_file(
     input: &Path,
     out_dir: &Path,
     window: &mut RollingWindow,
+    missing_person: &mut MissingPersonState,
     send_badger_enabled: bool,
     port: &str,
-) -> Result<()> {
+    no_person_after: Duration,
+    rotate: FrameRotation,
+) -> Result<FrameAnalysisOutcome> {
     let img = image::open(input).with_context(|| format!("opening {}", input.display()))?;
+    let img = apply_rotation(img, rotate);
     let detections = detect_tags(&img)?;
+    if !has_required_posture_tags(&detections) {
+        eprintln!("{}", missing_required_tags_message(&detections));
+        missing_person.record_missing(no_person_after, port, send_badger_enabled)?;
+        return Ok(FrameAnalysisOutcome::MissingRequiredTags);
+    }
     let posture = posture_from_detections(&detections)?;
+    missing_person.clear();
     window.push(posture);
     let avg = window.average().context("rolling average is empty")?;
     print_posture(input, &avg);
     let debug = out_dir.join("latest-analysis.png");
     write_debug_image(&img, &detections, &avg, &debug)?;
-    if send_badger_enabled {
-        send_to_badger(port, &avg)?;
+    publish_posture(port, &avg, send_badger_enabled)?;
+    Ok(FrameAnalysisOutcome::Posture)
+}
+
+fn apply_rotation(img: DynamicImage, rotation: FrameRotation) -> DynamicImage {
+    match rotation {
+        FrameRotation::None => img,
+        FrameRotation::Cw90 => img.rotate90(),
+        FrameRotation::Ccw90 => img.rotate270(),
+        FrameRotation::Deg180 => img.rotate180(),
     }
-    Ok(())
+}
+
+fn has_required_posture_tags(detections: &[DetectionPoint]) -> bool {
+    [EAR_ID, C7_ID, SHOULDER_ID]
+        .iter()
+        .all(|id| detections.iter().any(|det| det.id == *id))
+}
+
+fn missing_required_tags_message(detections: &[DetectionPoint]) -> String {
+    let mut ids = detections.iter().map(|det| det.id).collect::<Vec<_>>();
+    ids.sort_unstable();
+    ids.dedup();
+    format!(
+        "need at least ear(tag {EAR_ID}), C7(tag {C7_ID}), and shoulder(tag {SHOULDER_ID}); found ids {ids:?}"
+    )
 }
 
 fn list_cameras() -> Result<()> {
@@ -591,10 +693,27 @@ fn doctor(
         capture_timeout,
     ) {
         Ok(path) => println!("OK camera capture: {}", path.display()),
-        Err(err) => {
-            failures.push(format!("camera capture failed: {err:#}"));
-            println!("FAIL camera capture: {err:#}");
-        }
+        Err(err) => match recent_macos_app_frame(Duration::from_secs(180)) {
+            Ok(Some((path, age))) => {
+                println!(
+                    "OK macOS app camera frame: {} (updated {}s ago)",
+                    path.display(),
+                    age.as_secs()
+                );
+                println!("NOTE CLI camera capture is still unavailable: {err:#}");
+            }
+            Ok(None) => {
+                failures.push(format!("camera capture failed: {err:#}"));
+                println!("FAIL camera capture: {err:#}");
+            }
+            Err(frame_err) => {
+                failures.push(format!(
+                    "camera capture failed: {err:#}; macOS app frame check failed: {frame_err:#}"
+                ));
+                println!("FAIL camera capture: {err:#}");
+                println!("FAIL macOS app frame check: {frame_err:#}");
+            }
+        },
     }
 
     println!("doctor: checking Badger receiver on {port}");
@@ -840,6 +959,35 @@ fn capture_with_ffmpeg(ffmpeg_input: &str, out_dir: &Path, timeout: Duration) ->
     Ok(out)
 }
 
+fn recent_macos_app_frame(max_age: Duration) -> Result<Option<(PathBuf, Duration)>> {
+    if !cfg!(target_os = "macos") {
+        return Ok(None);
+    }
+    let Some(home) = std::env::var_os("HOME") else {
+        return Ok(None);
+    };
+    let path = PathBuf::from(home)
+        .join("Library")
+        .join("Application Support")
+        .join("Posture Watcher")
+        .join("latest-frame.jpg");
+    if !path.exists() {
+        return Ok(None);
+    }
+    let modified = fs::metadata(&path)
+        .with_context(|| format!("reading {}", path.display()))?
+        .modified()
+        .with_context(|| format!("reading mtime for {}", path.display()))?;
+    let age = SystemTime::now()
+        .duration_since(modified)
+        .unwrap_or(Duration::ZERO);
+    if age > max_age {
+        return Ok(None);
+    }
+    image::open(&path).with_context(|| format!("opening {}", path.display()))?;
+    Ok(Some((path, age)))
+}
+
 struct TimedCommandOutput {
     stderr: Vec<u8>,
     timed_out: bool,
@@ -1037,6 +1185,43 @@ fn draw_tag_outline(canvas: &mut RgbaImage, det: &DetectionPoint) {
 
 fn send_to_badger(port_name: &str, posture: &PostureFrame) -> Result<()> {
     let line = badger_payload(posture);
+    emit_display_payload(&line);
+    send_payload_to_badger(port_name, &line, "OK,P,")
+}
+
+fn publish_posture(
+    port_name: &str,
+    posture: &PostureFrame,
+    send_badger_enabled: bool,
+) -> Result<()> {
+    let line = badger_payload(posture);
+    emit_display_payload(&line);
+    if send_badger_enabled {
+        if let Err(err) = send_payload_to_badger(port_name, &line, "OK,P,") {
+            eprintln!("Badger posture send failed: {err:#}");
+        }
+    }
+    Ok(())
+}
+
+fn publish_badger_message(port_name: &str, message: &str, send_badger_enabled: bool) -> Result<()> {
+    let line = badger_message_payload(message);
+    emit_display_payload(&line);
+    if send_badger_enabled {
+        if let Err(err) = send_payload_to_badger(port_name, &line, "OK,M") {
+            eprintln!("Badger message send failed: {err:#}");
+        }
+    }
+    Ok(())
+}
+
+fn send_badger_message(port_name: &str, message: &str) -> Result<()> {
+    let line = badger_message_payload(message);
+    emit_display_payload(&line);
+    send_payload_to_badger(port_name, &line, "OK,M")
+}
+
+fn send_payload_to_badger(port_name: &str, line: &str, expected_reply_prefix: &str) -> Result<()> {
     let mut port = serialport::new(port_name, 115_200)
         .timeout(Duration::from_millis(100))
         .open()
@@ -1044,11 +1229,15 @@ fn send_to_badger(port_name: &str, posture: &PostureFrame) -> Result<()> {
     write_payload(&mut *port, &line)?;
     let reply = read_badger_reply(&mut *port, Duration::from_secs(8))?;
     ensure!(
-        reply.starts_with("OK,P,"),
+        reply.starts_with(expected_reply_prefix),
         "Badger rejected payload: {reply}"
     );
     println!("sent to Badger: {} ({reply})", line.trim());
     Ok(())
+}
+
+fn emit_display_payload(line: &str) {
+    println!("DISPLAY,{}", line.trim());
 }
 
 fn write_payload(port: &mut dyn SerialPort, line: &str) -> Result<()> {
@@ -1114,6 +1303,11 @@ fn badger_payload(posture: &PostureFrame) -> String {
             .unwrap_or_else(|| "na".to_string())
     ));
     parts.join(",") + "\n"
+}
+
+fn badger_message_payload(message: &str) -> String {
+    let clean = message.replace([',', '\n', '\r'], " ");
+    format!("M,{}\n", clean.trim())
 }
 
 fn print_posture(path: &Path, posture: &PostureFrame) {
@@ -1191,6 +1385,35 @@ impl RollingWindow {
             cva_degrees: (cva_count > 0).then_some(cva_sum / cva_count as f64),
             head_forward_px: (head_count > 0).then_some(head_sum / head_count as f64),
         })
+    }
+}
+
+impl MissingPersonState {
+    fn new() -> Self {
+        Self {
+            first_missing: None,
+            message_sent: false,
+        }
+    }
+
+    fn clear(&mut self) {
+        self.first_missing = None;
+        self.message_sent = false;
+    }
+
+    fn record_missing(
+        &mut self,
+        threshold: Duration,
+        port: &str,
+        send_badger_enabled: bool,
+    ) -> Result<()> {
+        let now = Instant::now();
+        let first_missing = *self.first_missing.get_or_insert(now);
+        if !self.message_sent && now.duration_since(first_missing) >= threshold {
+            publish_badger_message(port, NO_PERSON_MESSAGE, send_badger_enabled)?;
+            self.message_sent = true;
+        }
+        Ok(())
     }
 }
 

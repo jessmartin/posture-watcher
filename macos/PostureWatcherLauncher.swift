@@ -3,15 +3,133 @@ import AppKit
 import CoreImage
 import Foundation
 
+final class BadgerPreviewView: NSView {
+    private let badgerWidth: CGFloat = 296
+    private let badgerHeight: CGFloat = 128
+    private var points: [CGPoint] = []
+    private var note = ""
+    private var message = "waiting"
+
+    override var isFlipped: Bool { true }
+
+    func applyDisplayPayload(_ line: String) {
+        guard line.hasPrefix("DISPLAY,") else { return }
+        let payload = String(line.dropFirst("DISPLAY,".count))
+        let parts = payload.split(separator: ",", omittingEmptySubsequences: false).map(String.init)
+        guard let kind = parts.first else { return }
+
+        if kind == "M" {
+            points = []
+            note = ""
+            message = parts.dropFirst().joined(separator: ",")
+            needsDisplay = true
+            return
+        }
+
+        guard kind == "P", parts.count >= 2, let count = Int(parts[1]) else { return }
+        var parsed: [CGPoint] = []
+        let coordStart = 2
+        for index in 0..<count {
+            let xIndex = coordStart + index * 2
+            let yIndex = xIndex + 1
+            guard yIndex < parts.count, let x = Double(parts[xIndex]), let y = Double(parts[yIndex]) else {
+                return
+            }
+            parsed.append(CGPoint(x: x, y: y))
+        }
+        points = parsed
+        note = coordStart + count * 2 < parts.count ? parts[coordStart + count * 2] : ""
+        message = ""
+        needsDisplay = true
+    }
+
+    override func draw(_ dirtyRect: NSRect) {
+        NSColor.windowBackgroundColor.setFill()
+        bounds.fill()
+
+        let scale = min(bounds.width / badgerHeight, bounds.height / badgerWidth)
+        let displaySize = CGSize(width: badgerHeight * scale, height: badgerWidth * scale)
+        let origin = CGPoint(
+            x: (bounds.width - displaySize.width) / 2,
+            y: (bounds.height - displaySize.height) / 2
+        )
+        let displayRect = CGRect(origin: origin, size: displaySize)
+
+        NSColor.white.setFill()
+        displayRect.fill()
+        NSColor.black.setStroke()
+        let border = NSBezierPath(rect: displayRect)
+        border.lineWidth = 1
+        border.stroke()
+
+        func mapPoint(_ point: CGPoint) -> CGPoint {
+            CGPoint(x: origin.x + point.y * scale, y: origin.y + point.x * scale)
+        }
+
+        if !message.isEmpty {
+            let attrs: [NSAttributedString.Key: Any] = [
+                .font: NSFont.systemFont(ofSize: 16, weight: .semibold),
+                .foregroundColor: NSColor.black,
+                .paragraphStyle: centeredParagraph()
+            ]
+            let textRect = displayRect.insetBy(dx: 10, dy: displaySize.height * 0.42)
+            message.draw(in: textRect, withAttributes: attrs)
+            return
+        }
+
+        let guide = NSBezierPath()
+        guide.move(to: mapPoint(CGPoint(x: 18, y: badgerHeight / 2)))
+        guide.line(to: mapPoint(CGPoint(x: badgerWidth - 18, y: badgerHeight / 2)))
+        guide.lineWidth = 1
+        guide.stroke()
+
+        if points.count > 1 {
+            let curve = NSBezierPath()
+            curve.move(to: mapPoint(points[0]))
+            for point in points.dropFirst() {
+                curve.line(to: mapPoint(point))
+            }
+            curve.lineWidth = 4
+            curve.lineJoinStyle = .round
+            curve.lineCapStyle = .round
+            curve.stroke()
+        }
+
+        for point in points {
+            let center = mapPoint(point)
+            NSBezierPath(rect: CGRect(x: center.x - 4, y: center.y - 4, width: 8, height: 8)).fill()
+        }
+
+        if !note.isEmpty {
+            let attrs: [NSAttributedString.Key: Any] = [
+                .font: NSFont.monospacedSystemFont(ofSize: 11, weight: .regular),
+                .foregroundColor: NSColor.black
+            ]
+            note.draw(at: CGPoint(x: displayRect.minX + 8, y: displayRect.minY + 8), withAttributes: attrs)
+        }
+    }
+
+    private func centeredParagraph() -> NSParagraphStyle {
+        let style = NSMutableParagraphStyle()
+        style.alignment = .center
+        return style
+    }
+}
+
 final class PostureWatcherLauncher: NSObject, NSApplicationDelegate, AVCaptureVideoDataOutputSampleBufferDelegate {
     private var process: Process?
+    private var previewWindow: NSWindow?
+    private let previewView = BadgerPreviewView()
+    private var cameraPopup: NSPopUpButton?
+    private var selectedCameraName: String?
+    private var analyzerOutputBuffer = ""
     private let session = AVCaptureSession()
     private let captureQueue = DispatchQueue(label: "local.posture-watcher.capture")
     private let ciContext = CIContext()
     private var lastWrite = Date.distantPast
     private var frameURL: URL!
     private var logURL: URL!
-    private var intervalSeconds = 30.0
+    private var intervalSeconds = 5.0
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         do {
@@ -21,6 +139,7 @@ final class PostureWatcherLauncher: NSObject, NSApplicationDelegate, AVCaptureVi
         } catch {
             fputs("Posture Watcher log setup failed: \(error.localizedDescription)\n", stderr)
         }
+        setupPreviewWindow()
         requestCameraThenRun()
     }
 
@@ -28,6 +147,94 @@ final class PostureWatcherLauncher: NSObject, NSApplicationDelegate, AVCaptureVi
         log("app terminating")
         session.stopRunning()
         process?.terminate()
+    }
+
+    private func setupPreviewWindow() {
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 260, height: 610),
+            styleMask: [.titled, .closable, .miniaturizable],
+            backing: .buffered,
+            defer: false
+        )
+        window.title = "Posture Watcher"
+
+        let root = NSStackView()
+        root.orientation = .vertical
+        root.alignment = .centerX
+        root.spacing = 12
+        root.edgeInsets = NSEdgeInsets(top: 14, left: 14, bottom: 14, right: 14)
+        root.translatesAutoresizingMaskIntoConstraints = false
+
+        let cameraRow = NSStackView()
+        cameraRow.orientation = .horizontal
+        cameraRow.alignment = .centerY
+        cameraRow.spacing = 8
+        cameraRow.translatesAutoresizingMaskIntoConstraints = false
+
+        let cameraLabel = NSTextField(labelWithString: "Camera")
+        let popup = NSPopUpButton(frame: .zero, pullsDown: false)
+        popup.target = self
+        popup.action = #selector(cameraSelectionChanged(_:))
+        popup.translatesAutoresizingMaskIntoConstraints = false
+        popup.widthAnchor.constraint(equalToConstant: 175).isActive = true
+        cameraPopup = popup
+
+        cameraRow.addArrangedSubview(cameraLabel)
+        cameraRow.addArrangedSubview(popup)
+        root.addArrangedSubview(cameraRow)
+
+        previewView.translatesAutoresizingMaskIntoConstraints = false
+        previewView.widthAnchor.constraint(equalToConstant: 210).isActive = true
+        previewView.heightAnchor.constraint(equalToConstant: 485).isActive = true
+        root.addArrangedSubview(previewView)
+
+        let content = NSView()
+        content.addSubview(root)
+        NSLayoutConstraint.activate([
+            root.leadingAnchor.constraint(equalTo: content.leadingAnchor),
+            root.trailingAnchor.constraint(equalTo: content.trailingAnchor),
+            root.topAnchor.constraint(equalTo: content.topAnchor),
+            root.bottomAnchor.constraint(equalTo: content.bottomAnchor)
+        ])
+        window.contentView = content
+        previewWindow = window
+        populateCameraPopup()
+        window.center()
+        window.makeKeyAndOrderFront(nil)
+    }
+
+    private func populateCameraPopup() {
+        guard let cameraPopup else { return }
+        let devices = availableCameras()
+        let preferred = preferredCameraName()
+        cameraPopup.removeAllItems()
+        for device in devices {
+            cameraPopup.addItem(withTitle: device.localizedName)
+        }
+        let selected = devices.first { $0.localizedName == preferred }
+            ?? devices.first { $0.localizedName.contains(preferred) }
+            ?? devices.first
+        if let selected {
+            selectedCameraName = selected.localizedName
+            cameraPopup.selectItem(withTitle: selected.localizedName)
+        }
+    }
+
+    @objc private func cameraSelectionChanged(_ sender: NSPopUpButton) {
+        guard let title = sender.selectedItem?.title else { return }
+        selectedCameraName = title
+        UserDefaults.standard.set(title, forKey: "SelectedCameraName")
+        log("camera selection changed: \(title)")
+        guard frameURL != nil else { return }
+        do {
+            session.stopRunning()
+            try configureCapture()
+            session.startRunning()
+            log("AVFoundation session restarted")
+        } catch {
+            log("camera restart failed: \(error.localizedDescription)")
+            showMessage(error.localizedDescription)
+        }
     }
 
     private func requestCameraThenRun() {
@@ -61,7 +268,7 @@ final class PostureWatcherLauncher: NSObject, NSApplicationDelegate, AVCaptureVi
         do {
             let supportURL = try appSupportURL()
             frameURL = supportURL.appendingPathComponent("latest-frame.jpg")
-            intervalSeconds = Double(ProcessInfo.processInfo.environment["POSTURE_WATCHER_INTERVAL_SECS"] ?? "30") ?? 30.0
+            intervalSeconds = Double(ProcessInfo.processInfo.environment["POSTURE_WATCHER_INTERVAL_SECS"] ?? "5") ?? 5.0
             log("support directory: \(supportURL.path)")
             log("frame path: \(frameURL.path)")
             log("capture interval: \(intervalSeconds)s")
@@ -79,6 +286,12 @@ final class PostureWatcherLauncher: NSObject, NSApplicationDelegate, AVCaptureVi
     private func configureCapture() throws {
         session.beginConfiguration()
         session.sessionPreset = .hd1280x720
+        for input in session.inputs {
+            session.removeInput(input)
+        }
+        for output in session.outputs {
+            session.removeOutput(output)
+        }
 
         guard let device = selectedCamera() else {
             throw AppError.message("Could not find the requested camera.")
@@ -106,16 +319,36 @@ final class PostureWatcherLauncher: NSObject, NSApplicationDelegate, AVCaptureVi
     }
 
     private func selectedCamera() -> AVCaptureDevice? {
-        let requested = ProcessInfo.processInfo.environment["POSTURE_WATCHER_CAMERA"] ?? "Logitech Webcam C930e"
+        let requested = preferredCameraName()
+        let devices = availableCameras()
+        log("available cameras: \(devices.map { $0.localizedName }.joined(separator: ", "))")
+        let selected = devices.first { $0.localizedName == requested }
+            ?? devices.first { $0.localizedName.contains(requested) }
+            ?? devices.first
+            ?? AVCaptureDevice.default(for: .video)
+        if let selected {
+            selectedCameraName = selected.localizedName
+            DispatchQueue.main.async {
+                self.cameraPopup?.selectItem(withTitle: selected.localizedName)
+            }
+        }
+        return selected
+    }
+
+    private func availableCameras() -> [AVCaptureDevice] {
         let discovery = AVCaptureDevice.DiscoverySession(
             deviceTypes: [.external, .builtInWideAngleCamera, .continuityCamera],
             mediaType: .video,
             position: .unspecified
         )
-        log("available cameras: \(discovery.devices.map { $0.localizedName }.joined(separator: ", "))")
-        return discovery.devices.first { $0.localizedName == requested }
-            ?? discovery.devices.first { $0.localizedName.contains(requested) }
-            ?? AVCaptureDevice.default(for: .video)
+        return discovery.devices
+    }
+
+    private func preferredCameraName() -> String {
+        selectedCameraName
+            ?? UserDefaults.standard.string(forKey: "SelectedCameraName")
+            ?? ProcessInfo.processInfo.environment["POSTURE_WATCHER_CAMERA"]
+            ?? "Logitech Webcam C930e"
     }
 
     private func runPostureWatcher(inputURL: URL, supportURL: URL) {
@@ -129,19 +362,28 @@ final class PostureWatcherLauncher: NSObject, NSApplicationDelegate, AVCaptureVi
         let env = ProcessInfo.processInfo.environment
         let port = env["POSTURE_WATCHER_PORT"] ?? "/dev/cu.usbmodem83201"
         let window = env["POSTURE_WATCHER_WINDOW_SECS"] ?? "120"
-        let interval = env["POSTURE_WATCHER_INTERVAL_SECS"] ?? "30"
+        let interval = env["POSTURE_WATCHER_INTERVAL_SECS"] ?? "5"
+        let noPersonAfter = env["POSTURE_WATCHER_NO_PERSON_AFTER_SECS"] ?? "30"
+        let rotation = env["POSTURE_WATCHER_ROTATE"] ?? "ccw90"
         let outDir = supportURL.appendingPathComponent("analysis").path
 
         let task = Process()
         task.executableURL = URL(fileURLWithPath: binaryPath)
-        task.arguments = [
+        var arguments = [
             "live-file",
             "--input", inputURL.path,
             "--port", port,
             "--window-secs", window,
             "--interval-secs", interval,
+            "--no-person-after-secs", noPersonAfter,
+            "--rotate", rotation,
             "--out-dir", outDir
         ]
+        if env["POSTURE_WATCHER_NO_BADGER"] == "1" || !FileManager.default.fileExists(atPath: port) {
+            arguments.append("--no-badger")
+            log("Badger disabled for this run")
+        }
+        task.arguments = arguments
         task.currentDirectoryURL = URL(fileURLWithPath: bundle.resourcePath ?? NSHomeDirectory())
         log("launching analyzer: \(binaryPath) \(task.arguments?.joined(separator: " ") ?? "")")
 
@@ -153,7 +395,7 @@ final class PostureWatcherLauncher: NSObject, NSApplicationDelegate, AVCaptureVi
             let data = handle.availableData
             guard !data.isEmpty, let text = String(data: data, encoding: .utf8) else { return }
             fputs(text, stderr)
-            self.log(text.trimmingCharacters(in: .whitespacesAndNewlines))
+            self.handleAnalyzerOutput(text)
         }
 
         task.terminationHandler = { _ in
@@ -172,6 +414,23 @@ final class PostureWatcherLauncher: NSObject, NSApplicationDelegate, AVCaptureVi
             log("analyzer launch failed: \(error.localizedDescription)")
             showMessage("Could not start posture-watcher: \(error.localizedDescription)")
             NSApp.terminate(nil)
+        }
+    }
+
+    private func handleAnalyzerOutput(_ text: String) {
+        log(text.trimmingCharacters(in: .whitespacesAndNewlines))
+        analyzerOutputBuffer += text
+        while let newline = analyzerOutputBuffer.firstIndex(of: "\n") {
+            let line = String(analyzerOutputBuffer[..<newline])
+            analyzerOutputBuffer.removeSubrange(...newline)
+            handleAnalyzerLine(line.trimmingCharacters(in: .whitespacesAndNewlines))
+        }
+    }
+
+    private func handleAnalyzerLine(_ line: String) {
+        guard line.hasPrefix("DISPLAY,") else { return }
+        DispatchQueue.main.async {
+            self.previewView.applyDisplayPayload(line)
         }
     }
 
