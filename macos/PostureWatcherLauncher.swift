@@ -154,7 +154,7 @@ final class PostureWatcherLauncher: NSObject, NSApplicationDelegate, AVCaptureVi
 
     private func setupPreviewWindow() {
         let window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 260, height: 705),
+            contentRect: NSRect(x: 0, y: 0, width: 260, height: 750),
             styleMask: [.titled, .closable, .miniaturizable],
             backing: .buffered,
             defer: false
@@ -267,6 +267,12 @@ final class PostureWatcherLauncher: NSObject, NSApplicationDelegate, AVCaptureVi
         buttonRow.addArrangedSubview(stickerButton)
         root.addArrangedSubview(buttonRow)
 
+        let saveButton = NSButton(title: "Save Sample", target: self, action: #selector(saveSample(_:)))
+        saveButton.bezelStyle = .rounded
+        saveButton.translatesAutoresizingMaskIntoConstraints = false
+        saveButton.widthAnchor.constraint(equalToConstant: 210).isActive = true
+        root.addArrangedSubview(saveButton)
+
         let content = NSView()
         content.addSubview(root)
         NSLayoutConstraint.activate([
@@ -344,6 +350,16 @@ final class PostureWatcherLauncher: NSObject, NSApplicationDelegate, AVCaptureVi
         }
     }
 
+    @objc private func saveSample(_ sender: NSButton) {
+        do {
+            let urls = try saveCurrentSample()
+            log("saved sample: \(urls.map { $0.path }.joined(separator: ", "))")
+        } catch {
+            log("sample save failed: \(error.localizedDescription)")
+            showMessage(error.localizedDescription)
+        }
+    }
+
     private func requestCameraThenRun() {
         log("camera authorization status: \(AVCaptureDevice.authorizationStatus(for: .video).rawValue)")
         switch AVCaptureDevice.authorizationStatus(for: .video) {
@@ -357,18 +373,22 @@ final class PostureWatcherLauncher: NSObject, NSApplicationDelegate, AVCaptureVi
                     if granted {
                         self.startCaptureAndAnalyzer()
                     } else {
-                        self.showMessage("Camera access was denied.")
-                        NSApp.terminate(nil)
+                        self.showCameraPermissionProblem("Camera access was denied.")
                     }
                 }
             }
         case .denied, .restricted:
-            showMessage("Camera access is not enabled for Posture Watcher. Enable it in System Settings > Privacy & Security > Camera.")
-            NSApp.terminate(nil)
+            showCameraPermissionProblem("Camera access is not enabled for Posture Watcher. Enable it in System Settings > Privacy & Security > Camera.")
         @unknown default:
-            showMessage("Unknown camera permission state.")
-            NSApp.terminate(nil)
+            showCameraPermissionProblem("Unknown camera permission state.")
         }
+    }
+
+    private func showCameraPermissionProblem(_ text: String) {
+        tagStatusLabel?.stringValue = "camera blocked"
+        tagStatusLabel?.textColor = .systemRed
+        previewView.applyDisplayPayload("DISPLAY,M,Camera access needed")
+        showMessage(text)
     }
 
     private func startCaptureAndAnalyzer() {
@@ -567,6 +587,82 @@ final class PostureWatcherLauncher: NSObject, NSApplicationDelegate, AVCaptureVi
             return frameURL
         }
         throw AppError.message("No camera frame has been captured yet.")
+    }
+
+    private func saveCurrentSample() throws -> [URL] {
+        let supportURL = try appSupportURL()
+        let sampleMode = currentSampleMode()
+        let sampleDir = supportURL
+            .appendingPathComponent("samples", isDirectory: true)
+            .appendingPathComponent(sampleMode.folderName, isDirectory: true)
+        let fm = FileManager.default
+        try fm.createDirectory(at: sampleDir, withIntermediateDirectories: true)
+
+        let stamp = sampleTimestamp()
+        let latestFrameURL = supportURL.appendingPathComponent("latest-frame.jpg")
+        guard fm.fileExists(atPath: latestFrameURL.path) else {
+            throw AppError.message("No camera frame has been captured yet.")
+        }
+
+        var savedURLs: [URL] = []
+        let frameOutURL = sampleDir.appendingPathComponent("\(stamp)-frame.jpg")
+        try copyReplacing(from: latestFrameURL, to: frameOutURL)
+        savedURLs.append(frameOutURL)
+
+        let analysisDir = supportURL.appendingPathComponent("analysis", isDirectory: true)
+        let optionalImages = [
+            ("latest-tags.png", "\(stamp)-tags.png"),
+            ("latest-analysis.png", "\(stamp)-analysis.png")
+        ]
+        for (inputName, outputName) in optionalImages {
+            let inputURL = analysisDir.appendingPathComponent(inputName)
+            guard fm.fileExists(atPath: inputURL.path) else { continue }
+            let outputURL = sampleDir.appendingPathComponent(outputName)
+            try copyReplacing(from: inputURL, to: outputURL)
+            savedURLs.append(outputURL)
+        }
+
+        let metadataURL = sampleDir.appendingPathComponent("\(stamp).txt")
+        let cameraName = selectedCameraName
+            ?? UserDefaults.standard.string(forKey: "SelectedCameraName")
+            ?? "unknown"
+        let metadata = [
+            "created_at=\(ISO8601DateFormatter().string(from: Date()))",
+            "mode=\(sampleMode.title)",
+            "camera=\(cameraName)",
+            "frame=\(frameOutURL.lastPathComponent)"
+        ].joined(separator: "\n") + "\n"
+        try metadata.write(to: metadataURL, atomically: true, encoding: .utf8)
+        savedURLs.append(metadataURL)
+
+        return savedURLs
+    }
+
+    private func currentSampleMode() -> (title: String, folderName: String) {
+        let title = modePopup?.selectedItem?.title
+            ?? UserDefaults.standard.string(forKey: "PostureMode")
+            ?? "Auto"
+        let folderName = title
+            .lowercased()
+            .components(separatedBy: CharacterSet.alphanumerics.inverted)
+            .filter { !$0.isEmpty }
+            .joined(separator: "-")
+        return (title, folderName.isEmpty ? "auto" : folderName)
+    }
+
+    private func sampleTimestamp() -> String {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.dateFormat = "yyyyMMdd-HHmmss-SSS"
+        return formatter.string(from: Date())
+    }
+
+    private func copyReplacing(from sourceURL: URL, to destinationURL: URL) throws {
+        let fm = FileManager.default
+        if fm.fileExists(atPath: destinationURL.path) {
+            try fm.removeItem(at: destinationURL)
+        }
+        try fm.copyItem(at: sourceURL, to: destinationURL)
     }
 
     private func postureWatcherBinaryPath() throws -> String {

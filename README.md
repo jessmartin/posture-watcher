@@ -50,7 +50,7 @@ Launch it:
 open "target/macos/Posture Watcher.app"
 ```
 
-The app should prompt for Camera permission as `Posture Watcher`. It opens a small preview window that mirrors the Badger display, shows Badger connection and visible-tag status, lets you choose the camera, captures frames natively, and runs the bundled Rust binary in `live-file` mode. The Mode picker is a manual field-test label for Auto/Sitting/Standing while collecting real sitting and standing examples. `Open Debug` opens the latest camera/tag debug frame, and `Open Tags` generates and opens a printable AprilTag sheet. Runtime outputs go under `~/Library/Application Support/Posture Watcher/`.
+The app should prompt for Camera permission as `Posture Watcher`. It opens a small preview window that mirrors the Badger display, shows Badger connection and visible-tag status, lets you choose the camera, captures frames natively, and runs the bundled Rust binary in `live-file` mode. The Mode picker is a manual field-test label for Auto/Sitting/Standing while collecting real sitting and standing examples. `Open Debug` opens the latest camera/tag debug frame, `Open Tags` generates and opens a printable AprilTag sheet, and `Save Sample` copies the latest frame plus debug images into `~/Library/Application Support/Posture Watcher/samples/<mode>/`. Runtime outputs go under `~/Library/Application Support/Posture Watcher/`.
 
 Watch the app log:
 
