@@ -47,10 +47,16 @@ The Badger sits in portrait orientation just below the monitor, close enough to 
 
 ## How I Built It
 
-The camera is mounted to the side for a clean profile view. A printed AprilTag sheet provides the daily markers, and the Badger plugs in over USB-C so the Rust analyzer can push the same curve to the desk display.
+The hardware loop is deliberately simple: the camera is mounted to the side for a clean profile view, a printed AprilTag sheet provides the daily markers, and the Badger plugs in over USB-C so the Rust analyzer can push the same curve to the desk display.
 
 <p align="center">
   <img src="docs/screenshots/desk-setup.jpg" width="680" alt="Desk setup with side camera, printed AprilTag sheet, and Badger2040 connected over USB-C">
+</p>
+
+The software loop was built with Codex using a long-running `/goal`: "set up a working e2e Rust app for tracking my posture using a webcam and e-ink device." Codex drove the implementation across the Rust analyzer, Badger MicroPython receiver, macOS camera app, hardware checks, README screenshots, and iterative fixes while I tested the physical setup at the desk.
+
+<p align="center">
+  <img src="docs/screenshots/codex-goal.png" width="680" alt="Codex pursuing the posture watcher build as a long-running goal">
 </p>
 
 ## Hardware
