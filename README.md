@@ -21,7 +21,8 @@ The live loop is working with the plugged-in Logitech C930e and Badger2040:
 - The Rust analyzer inspects a short burst of recent frames, detects AprilTags, fuses the strongest observations, and writes debug images/reports.
 - The Badger receiver ACKs messages over USB serial.
 - The app distinguishes `Tags ready` from marker placement quality.
-- When marker geometry is implausible, the Badger shows a short fix like `Move ear tag up` instead of a misleading curve.
+- The Badger shows the long-window posture curve against the calibrated sitting/standing baseline instead of treating a straight line as the goal.
+- Short marker dropouts are counted but do not immediately replace the curve; sustained marker problems still show a short fix like `Move ear tag up`.
 
 The remaining calibration work is physical: place the tags on the actual landmarks, collect sitting and standing samples, then tune the sitting/standing and placement heuristics against those examples.
 
@@ -133,9 +134,11 @@ The macOS app writes a rolling burst of camera frames in addition to `latest-fra
 
 Defaults:
 
-- `POSTURE_WATCHER_INTERVAL_SECS=5`: how often the Badger/posture state updates.
+- `POSTURE_WATCHER_INTERVAL_SECS=15`: how often the Badger/posture state updates.
 - `POSTURE_WATCHER_BURST_FRAMES=8`: how many recent frames the analyzer inspects per update.
 - `POSTURE_WATCHER_BURST_FRAME_INTERVAL_SECS=0.25`: how often the macOS capture loop writes burst frames.
+
+The main Badger line is still based on the rolling posture window, not one instant camera frame. The small strip near the bottom of the display is recent sample quality: filled ticks are usable posture measurements and short marks are missed/invalid updates.
 
 The CLI equivalent is:
 
@@ -218,13 +221,13 @@ If the app says `Aim C7 flag`, `Move ear tag up`, `Recheck ear and C7`, `Move sh
 
 Posture feedback is only useful if the markers are trustworthy. The analyzer therefore keeps tag visibility separate from marker plausibility.
 
-If tags are missing for long enough, the Badger says:
+If no tags are visible for long enough, the Badger says:
 
 ```text
 No person found
 ```
 
-If tags are visible but the geometry is implausible, the Badger gives a short correction:
+If tags are visible but the geometry is implausible for several consecutive updates, the Badger gives a short correction:
 
 ```text
 Move ear tag up
@@ -236,7 +239,7 @@ If the side camera can see the ear and shoulder but not C7, the Badger/app will 
 Aim C7 flag
 ```
 
-That prevents the e-ink display from encouraging posture changes based on bad marker placement. Current placement checks include things like whether the ear marker is actually above C7 and whether the ear-to-C7 angle is geometrically plausible. The fallback message is `Check markers` when the analyzer cannot choose a more specific action.
+That prevents the e-ink display from encouraging posture changes based on bad marker placement, while avoiding flicker from momentary occlusions. Current placement checks include things like whether the ear marker is actually above C7 and whether the ear-to-C7 angle is geometrically plausible. The fallback message is `Check markers` when the analyzer cannot choose a more specific action.
 
 ## Calibration
 
@@ -283,7 +286,7 @@ That command averages only `placement_status=good` reports and writes:
 ~/Library/Application Support/Posture Watcher/calibration/baseline.txt
 ```
 
-The live analyzer reads that file while it runs. When a mode baseline is ready, the Badger/app note changes from raw `cva=...` to a compact baseline-relative drift such as `sit -3deg` or `std +2deg`. Sitting and standing each keep their own rolling average window, so switching desk modes does not blend the two postures together.
+The live analyzer reads that file while it runs. When a mode baseline is ready, the Badger/app note changes from raw `cva=...` to a compact baseline-relative drift such as `sit -3deg` or `std +2deg`, and the display draws a thin dashed baseline curve behind the thicker live rolling-average curve. Sitting and standing each keep their own rolling average window, so switching desk modes does not blend the two postures together.
 
 The app's Baseline row will show `ready`, `need sitting`, `need standing`, or `needs samples` after calibration. `Open Base` opens the generated text file so you can inspect the accepted sample counts and averaged measurements.
 
@@ -387,15 +390,15 @@ cargo run -- restore-badger
 
 ## Notes
 
-Live mode defaults to `--rotate ccw90` because the camera is mounted on its side, `--interval-secs 5`, and a 120-second rolling average. Set `POSTURE_WATCHER_NO_BADGER=1` to use only the macOS preview window.
+Live mode defaults to `--rotate ccw90` because the camera is mounted on its side, `--interval-secs 15`, and a 120-second rolling average. Set `POSTURE_WATCHER_NO_BADGER=1` to use only the macOS preview window.
 
 Optional app overrides:
 
 ```sh
 POSTURE_WATCHER_CAMERA="Logitech Webcam C930e" \
 POSTURE_WATCHER_PORT="/dev/cu.usbmodem83201" \
-POSTURE_WATCHER_INTERVAL_SECS=5 \
-POSTURE_WATCHER_NO_PERSON_AFTER_SECS=30 \
+POSTURE_WATCHER_INTERVAL_SECS=15 \
+POSTURE_WATCHER_NO_PERSON_AFTER_SECS=60 \
 POSTURE_WATCHER_ROTATE=ccw90 \
 POSTURE_WATCHER_BADGER_ORIENTATION=usb-bottom \
 open "target/macos/Posture Watcher.app"

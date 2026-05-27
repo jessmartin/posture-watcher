@@ -23,9 +23,11 @@ use walkdir::WalkDir;
 const BADGER_WIDTH: i32 = 296;
 const BADGER_HEIGHT: i32 = 128;
 const BADGER_PROTOCOL: &str = "POSTURE_WATCHER_BADGER_V2";
-const DEFAULT_LIVE_INTERVAL_SECS: u64 = 5;
-const DEFAULT_NO_PERSON_AFTER_SECS: u64 = 30;
+const DEFAULT_LIVE_INTERVAL_SECS: u64 = 15;
+const DEFAULT_NO_PERSON_AFTER_SECS: u64 = 60;
 const DEFAULT_BURST_FRAMES: usize = 8;
+const QUALITY_HISTORY_CAPACITY: usize = 16;
+const MESSAGE_AFTER_CONSECUTIVE_MISSES: usize = 4;
 const NO_PERSON_MESSAGE: &str = "No person found";
 const CHECK_MARKERS_MESSAGE: &str = "Check markers";
 
@@ -404,7 +406,7 @@ impl ModeEstimate {
     }
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 struct Point {
     x: f64,
     y: f64,
@@ -448,6 +450,12 @@ struct ModeRollingWindows {
 struct MissingPersonState {
     first_missing: Option<Instant>,
     message_sent: bool,
+}
+
+#[derive(Debug)]
+struct QualityHistory {
+    entries: VecDeque<bool>,
+    capacity: usize,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -881,7 +889,7 @@ fn run_samples(
         write_debug_image(&img, &detections, &avg, &out)?;
         println!("wrote {}", out.display());
         if send_badger_enabled {
-            publish_posture(port, &avg, None, badger_orientation, true)?;
+            publish_posture(port, &avg, None, None, badger_orientation, true)?;
             thread::sleep(Duration::from_millis(delay_ms));
         }
     }
@@ -908,6 +916,7 @@ fn live(
     fs::create_dir_all(out_dir).with_context(|| format!("creating {}", out_dir.display()))?;
     let mut windows = ModeRollingWindows::new(Duration::from_secs(window_secs));
     let mut missing_person = MissingPersonState::new();
+    let mut quality = QualityHistory::new(QUALITY_HISTORY_CAPACITY);
     println!(
         "starting live capture from {camera}; press Ctrl-C to stop; interval={}s window={}s rotate={rotate:?}",
         interval_secs, window_secs
@@ -928,6 +937,7 @@ fn live(
             out_dir,
             &mut windows,
             &mut missing_person,
+            &mut quality,
             send_badger_enabled,
             port,
             no_person_after,
@@ -968,6 +978,7 @@ fn live_file(
     fs::create_dir_all(out_dir).with_context(|| format!("creating {}", out_dir.display()))?;
     let mut windows = ModeRollingWindows::new(Duration::from_secs(window_secs));
     let mut missing_person = MissingPersonState::new();
+    let mut quality = QualityHistory::new(QUALITY_HISTORY_CAPACITY);
     println!(
         "starting live-file from {}; press Ctrl-C to stop; interval={}s window={}s rotate={rotate:?}",
         input.display(),
@@ -1000,6 +1011,7 @@ fn live_file(
             out_dir,
             &mut windows,
             &mut missing_person,
+            &mut quality,
             send_badger_enabled,
             port,
             no_person_after,
@@ -1233,6 +1245,7 @@ fn analyze_frame_file(
     out_dir: &Path,
     windows: &mut ModeRollingWindows,
     missing_person: &mut MissingPersonState,
+    quality: &mut QualityHistory,
     send_badger_enabled: bool,
     port: &str,
     no_person_after: Duration,
@@ -1261,6 +1274,7 @@ fn analyze_frame_file(
     let placement = estimate_placement_from_detections(&detections);
     emit_placement_status(&placement);
     if !has_required_posture_tags(&detections) {
+        quality.push(false);
         let report = out_dir.join("latest-tags.txt");
         write_tag_report(&input, &img, &detections, None, &report)?;
         eprintln!("{}", missing_required_tags_message(&detections));
@@ -1273,12 +1287,14 @@ fn analyze_frame_file(
             )?;
         } else {
             missing_person.clear();
-            publish_badger_message(
-                port,
-                placement.badger_message(),
-                badger_orientation,
-                send_badger_enabled,
-            )?;
+            if quality.consecutive_misses() >= MESSAGE_AFTER_CONSECUTIVE_MISSES {
+                publish_badger_message(
+                    port,
+                    placement.badger_message(),
+                    badger_orientation,
+                    send_badger_enabled,
+                )?;
+            }
         }
         return Ok(FrameAnalysisOutcome::MissingRequiredTags);
     }
@@ -1287,17 +1303,21 @@ fn analyze_frame_file(
     write_tag_report(&input, &img, &detections, Some(&posture), &report)?;
     missing_person.clear();
     if !placement.is_good() {
+        quality.push(false);
         print_posture(&input, &posture, None);
         let debug = out_dir.join("latest-analysis.png");
         write_debug_image(&img, &detections, &posture, &debug)?;
-        publish_badger_message(
-            port,
-            placement.badger_message(),
-            badger_orientation,
-            send_badger_enabled,
-        )?;
+        if quality.consecutive_misses() >= MESSAGE_AFTER_CONSECUTIVE_MISSES {
+            publish_badger_message(
+                port,
+                placement.badger_message(),
+                badger_orientation,
+                send_badger_enabled,
+            )?;
+        }
         return Ok(FrameAnalysisOutcome::InvalidPlacement);
     }
+    quality.push(true);
     let avg = windows
         .push(mode.mode, posture)
         .context("rolling average is empty")?;
@@ -1314,10 +1334,12 @@ fn analyze_frame_file(
     print_posture(&input, &avg, drift.as_ref());
     let debug = out_dir.join("latest-analysis.png");
     write_debug_image(&img, &detections, &avg, &debug)?;
+    let quality_bits = quality.bits();
     publish_posture(
         port,
         &avg,
         drift.as_ref(),
+        Some(&quality_bits),
         badger_orientation,
         send_badger_enabled,
     )?;
@@ -1533,10 +1555,11 @@ fn doctor_baseline_display_smoke(files: &[PathBuf], out_dir: &Path) -> Result<St
     fs::write(
         &baseline_path,
         format!(
-            "created_at_unix=0\nsamples_dir={}\nmin_samples_per_mode=1\nmode.sitting.status=ready\nmode.sitting.accepted=1\nmode.sitting.cva_degrees.mean={:.2}\nmode.sitting.head_forward_px.mean={:.2}\nmode.standing.status=needs_more_samples\nmode.standing.accepted=0\n",
+            "created_at_unix=0\nsamples_dir={}\nmin_samples_per_mode=1\nmode.sitting.status=ready\nmode.sitting.accepted=1\nmode.sitting.cva_degrees.mean={:.2}\nmode.sitting.head_forward_px.mean={:.2}\nmode.sitting.display_points={}\nmode.standing.status=needs_more_samples\nmode.standing.accepted=0\n",
             out_dir.display(),
             cva - 5.0,
-            head
+            head,
+            format_display_points(&posture.display_points)
         ),
     )
     .with_context(|| format!("writing {}", baseline_path.display()))?;
@@ -1553,10 +1576,18 @@ fn doctor_baseline_display_smoke(files: &[PathBuf], out_dir: &Path) -> Result<St
         "expected baseline note `sit +5deg`, got `{note}` using {}",
         path.display()
     );
-    let payload = badger_payload(&avg, Some(&note), BadgerOrientation::UsbTop);
+    let baseline_points = (!drift.baseline_display_points.is_empty())
+        .then_some(drift.baseline_display_points.as_slice());
+    let payload = badger_payload(
+        &avg,
+        Some(&note),
+        baseline_points,
+        Some("1"),
+        BadgerOrientation::UsbTop,
+    );
     ensure!(
-        payload.trim().ends_with(",sit +5deg"),
-        "expected Badger payload to end with baseline note, got `{}`",
+        payload.trim().contains(",sit +5deg,B,"),
+        "expected Badger payload to include baseline note and baseline curve, got `{}`",
         payload.trim()
     );
     Ok(note)
@@ -2301,14 +2332,9 @@ fn write_tag_report(
                     .map(|v| format!("{v:.1}"))
                     .unwrap_or_else(|| "n/a".to_string())
             ));
-            let display_points = posture
-                .display_points
-                .iter()
-                .map(|(id, p)| format!("{}:{:.1}:{:.1}", tag_short_label(*id), p.x, p.y))
-                .collect::<Vec<_>>();
             lines.push(format!(
                 "posture.display_points={}",
-                display_points.join(" ")
+                format_display_points(&posture.display_points)
             ));
         }
         None => {
@@ -2328,6 +2354,7 @@ struct BaselineSample {
     path: PathBuf,
     cva_degrees: f64,
     head_forward_px: f64,
+    display_points: Vec<(usize, Point)>,
 }
 
 #[derive(Debug, Clone)]
@@ -2357,6 +2384,7 @@ struct ModeBaseline {
     accepted: usize,
     cva_degrees: Option<f64>,
     head_forward_px: Option<f64>,
+    display_points: Vec<(usize, Point)>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -2365,6 +2393,7 @@ struct BaselineDrift {
     accepted_samples: usize,
     cva_delta_degrees: Option<f64>,
     head_forward_delta_px: Option<f64>,
+    baseline_display_points: Vec<(usize, Point)>,
 }
 
 impl BaselineDrift {
@@ -2476,6 +2505,11 @@ fn summarize_baseline_mode(samples_dir: &Path, mode: DetectedDeskMode) -> Result
             path: report,
             cva_degrees,
             head_forward_px,
+            display_points: values
+                .get("posture.display_points")
+                .map(|value| parse_display_points(value))
+                .transpose()?
+                .unwrap_or_default(),
         });
     }
 
@@ -2518,6 +2552,12 @@ fn append_baseline_summary(lines: &mut Vec<String>, summary: &BaselineSummary, m
         &format!("mode.{label}.head_forward_px"),
         sample_stats(&head_forward),
     );
+
+    let display_points = average_display_points(&summary.accepted);
+    lines.push(format!(
+        "mode.{label}.display_points={}",
+        format_display_points(&display_points)
+    ));
 
     for (idx, sample) in summary.accepted.iter().enumerate() {
         lines.push(format!(
@@ -2568,6 +2608,25 @@ fn sample_stats(values: &[f64]) -> Option<SampleStats> {
     })
 }
 
+fn average_display_points(samples: &[BaselineSample]) -> Vec<(usize, Point)> {
+    let mut sums: BTreeMap<usize, (f64, f64, usize)> = BTreeMap::new();
+    for sample in samples {
+        for (id, point) in &sample.display_points {
+            let entry = sums.entry(*id).or_insert((0.0, 0.0, 0));
+            entry.0 += point.x;
+            entry.1 += point.y;
+            entry.2 += 1;
+        }
+    }
+    [HIP_ID, SHOULDER_ID, C7_ID, EAR_ID]
+        .into_iter()
+        .filter_map(|id| {
+            let (x, y, count) = sums.get(&id)?;
+            Some((id, Point::new(x / *count as f64, y / *count as f64)))
+        })
+        .collect()
+}
+
 fn parse_key_value_file(path: &Path) -> Result<BTreeMap<String, String>> {
     let text = fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
     Ok(text
@@ -2579,6 +2638,53 @@ fn parse_key_value_file(path: &Path) -> Result<BTreeMap<String, String>> {
 
 fn parse_report_f64(values: &BTreeMap<String, String>, key: &str) -> Option<f64> {
     values.get(key)?.parse().ok()
+}
+
+fn format_display_points(points: &[(usize, Point)]) -> String {
+    points
+        .iter()
+        .map(|(id, point)| format!("{}:{:.1}:{:.1}", tag_short_label(*id), point.x, point.y))
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+fn parse_display_points(value: &str) -> Result<Vec<(usize, Point)>> {
+    value
+        .split_whitespace()
+        .map(|entry| {
+            let mut parts = entry.split(':');
+            let label = parts
+                .next()
+                .ok_or_else(|| anyhow!("missing display point label"))?;
+            let x = parts
+                .next()
+                .ok_or_else(|| anyhow!("missing display point x for {label}"))?
+                .parse::<f64>()
+                .with_context(|| format!("parsing display point x for {label}"))?;
+            let y = parts
+                .next()
+                .ok_or_else(|| anyhow!("missing display point y for {label}"))?
+                .parse::<f64>()
+                .with_context(|| format!("parsing display point y for {label}"))?;
+            ensure!(
+                parts.next().is_none(),
+                "too many fields in display point {entry}"
+            );
+            let id = tag_id_from_short_label(label)
+                .ok_or_else(|| anyhow!("unknown display point label {label}"))?;
+            Ok((id, Point::new(x, y)))
+        })
+        .collect()
+}
+
+fn tag_id_from_short_label(label: &str) -> Option<usize> {
+    match label {
+        "ear" => Some(EAR_ID),
+        "C7" | "c7" => Some(C7_ID),
+        "shoulder" => Some(SHOULDER_ID),
+        "hip" => Some(HIP_ID),
+        _ => None,
+    }
 }
 
 fn baseline_drift_for_file(
@@ -2619,6 +2725,13 @@ fn parse_mode_baseline(
         accepted,
         cva_degrees: parse_report_f64(values, &format!("{prefix}.cva_degrees.mean")),
         head_forward_px: parse_report_f64(values, &format!("{prefix}.head_forward_px.mean")),
+        display_points: values
+            .get(&format!("{prefix}.display_points"))
+            .map(|value| parse_display_points(value))
+            .transpose()
+            .ok()
+            .flatten()
+            .unwrap_or_default(),
     })
 }
 
@@ -2639,6 +2752,7 @@ impl PostureBaseline {
                 .head_forward_px
                 .zip(baseline.head_forward_px)
                 .map(|(now, base)| now - base),
+            baseline_display_points: baseline.display_points.clone(),
         })
     }
 }
@@ -2699,7 +2813,7 @@ fn send_to_badger(
     posture: &PostureFrame,
     badger_orientation: BadgerOrientation,
 ) -> Result<()> {
-    let line = badger_payload(posture, None, badger_orientation);
+    let line = badger_payload(posture, None, None, None, badger_orientation);
     emit_display_payload(&line);
     send_payload_to_badger(port_name, &line, "OK,P,")
 }
@@ -2708,13 +2822,23 @@ fn publish_posture(
     port_name: &str,
     posture: &PostureFrame,
     drift: Option<&BaselineDrift>,
+    quality_bits: Option<&str>,
     badger_orientation: BadgerOrientation,
     send_badger_enabled: bool,
 ) -> Result<()> {
     let note = drift
         .map(BaselineDrift::note)
         .unwrap_or_else(|| posture_note(posture));
-    let line = badger_payload(posture, Some(&note), badger_orientation);
+    let baseline_points = drift
+        .map(|drift| drift.baseline_display_points.as_slice())
+        .filter(|points| !points.is_empty());
+    let line = badger_payload(
+        posture,
+        Some(&note),
+        baseline_points,
+        quality_bits,
+        badger_orientation,
+    );
     emit_display_payload(&line);
     if send_badger_enabled {
         if let Err(err) = send_payload_to_badger(port_name, &line, "OK,P,") {
@@ -2859,6 +2983,8 @@ fn read_badger_reply(port: &mut dyn SerialPort, timeout: Duration) -> Result<Str
 fn badger_payload(
     posture: &PostureFrame,
     note: Option<&str>,
+    baseline_points: Option<&[(usize, Point)]>,
+    quality_bits: Option<&str>,
     badger_orientation: BadgerOrientation,
 ) -> String {
     let mut parts = vec!["P".to_string()];
@@ -2878,7 +3004,25 @@ fn badger_payload(
             &fallback_note
         }
     };
-    parts.push(note.to_string());
+    parts.push(clean_payload_text(note));
+    if let Some(baseline_points) = baseline_points {
+        parts.push("B".to_string());
+        parts.push(baseline_points.len().to_string());
+        for (_, p) in baseline_points {
+            parts.push((p.x.round() as i32).clamp(0, BADGER_WIDTH - 1).to_string());
+            parts.push((p.y.round() as i32).clamp(0, BADGER_HEIGHT - 1).to_string());
+        }
+    }
+    if let Some(bits) = quality_bits {
+        if !bits.is_empty() {
+            parts.push("Q".to_string());
+            parts.push(
+                bits.chars()
+                    .filter(|bit| *bit == '0' || *bit == '1')
+                    .collect(),
+            );
+        }
+    }
     parts.join(",") + "\n"
 }
 
@@ -3016,6 +3160,33 @@ impl ModeRollingWindows {
             .or_insert_with(|| RollingWindow::new(self.window));
         window.push(frame);
         window.average()
+    }
+}
+
+impl QualityHistory {
+    fn new(capacity: usize) -> Self {
+        Self {
+            entries: VecDeque::with_capacity(capacity),
+            capacity,
+        }
+    }
+
+    fn push(&mut self, good: bool) {
+        if self.entries.len() == self.capacity {
+            self.entries.pop_front();
+        }
+        self.entries.push_back(good);
+    }
+
+    fn bits(&self) -> String {
+        self.entries
+            .iter()
+            .map(|good| if *good { '1' } else { '0' })
+            .collect()
+    }
+
+    fn consecutive_misses(&self) -> usize {
+        self.entries.iter().rev().take_while(|good| !**good).count()
     }
 }
 
@@ -3399,6 +3570,9 @@ mod tests {
         assert!(text.contains("mode.sitting.ignored=1"));
         assert!(text.contains("mode.sitting.cva_degrees.mean=50.00"));
         assert!(text.contains("mode.sitting.head_forward_px.mean=14.00"));
+        assert!(text.contains(
+            "mode.sitting.display_points=shoulder:204.0:64.0 C7:126.0:70.0 ear:32.0:80.0"
+        ));
         assert!(text.contains("mode.standing.status=needs_more_samples"));
 
         let _ = fs::remove_dir_all(root);
@@ -3415,6 +3589,11 @@ mod tests {
                     accepted: 3,
                     cva_degrees: Some(50.0),
                     head_forward_px: Some(10.0),
+                    display_points: vec![
+                        (SHOULDER_ID, Point::new(204.0, 64.0)),
+                        (C7_ID, Point::new(126.0, 70.0)),
+                        (EAR_ID, Point::new(32.0, 80.0)),
+                    ],
                 },
             )]),
         };
@@ -3425,6 +3604,7 @@ mod tests {
         assert_eq!(drift.accepted_samples, 3);
         assert!((drift.cva_delta_degrees.unwrap() + 2.8).abs() < 0.1);
         assert!((drift.head_forward_delta_px.unwrap() - 8.0).abs() < 0.1);
+        assert_eq!(drift.baseline_display_points.len(), 3);
         assert_eq!(drift.note(), "sit -3deg");
         assert!(baseline
             .drift_for(DetectedDeskMode::Standing, &posture)
@@ -3439,8 +3619,40 @@ mod tests {
             (C7_ID, Point::new(126.0, 70.0)),
             (EAR_ID, Point::new(32.0, 80.0)),
         ];
-        let payload = badger_payload(&posture, Some("sit -3deg"), BadgerOrientation::UsbTop);
+        let payload = badger_payload(
+            &posture,
+            Some("sit -3deg"),
+            None,
+            None,
+            BadgerOrientation::UsbTop,
+        );
         assert_eq!(payload.trim(), "P,3,204,64,126,70,32,80,sit -3deg");
+    }
+
+    #[test]
+    fn badger_payload_can_include_baseline_curve() {
+        let mut posture = test_posture_frame(47.2, 18.0);
+        posture.display_points = vec![
+            (SHOULDER_ID, Point::new(204.0, 72.0)),
+            (C7_ID, Point::new(126.0, 78.0)),
+            (EAR_ID, Point::new(32.0, 88.0)),
+        ];
+        let baseline = vec![
+            (SHOULDER_ID, Point::new(204.0, 64.0)),
+            (C7_ID, Point::new(126.0, 70.0)),
+            (EAR_ID, Point::new(32.0, 80.0)),
+        ];
+        let payload = badger_payload(
+            &posture,
+            Some("sit -3deg"),
+            Some(&baseline),
+            Some("101"),
+            BadgerOrientation::UsbTop,
+        );
+        assert_eq!(
+            payload.trim(),
+            "P,3,204,72,126,78,32,88,sit -3deg,B,3,204,64,126,70,32,80,Q,101"
+        );
     }
 
     #[test]
@@ -3451,7 +3663,13 @@ mod tests {
             (C7_ID, Point::new(126.0, 70.0)),
             (EAR_ID, Point::new(32.0, 80.0)),
         ];
-        let payload = badger_payload(&posture, Some("sit -3deg"), BadgerOrientation::UsbBottom);
+        let payload = badger_payload(
+            &posture,
+            Some("sit -3deg"),
+            None,
+            None,
+            BadgerOrientation::UsbBottom,
+        );
         assert_eq!(payload.trim(), "P,B,3,204,64,126,70,32,80,sit -3deg");
         assert_eq!(
             badger_message_payload("Check markers", BadgerOrientation::UsbBottom).trim(),
@@ -3554,7 +3772,7 @@ mod tests {
         fs::write(
             path,
             format!(
-                "status=ready\nplacement_status={placement_status}\nposture.cva_degrees={cva_degrees}\nposture.head_forward_px={head_forward_px}\n"
+                "status=ready\nplacement_status={placement_status}\nposture.cva_degrees={cva_degrees}\nposture.head_forward_px={head_forward_px}\nposture.display_points=shoulder:204.0:64.0 C7:126.0:70.0 ear:32.0:80.0\n"
             ),
         )?;
         Ok(())

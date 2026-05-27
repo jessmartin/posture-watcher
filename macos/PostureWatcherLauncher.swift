@@ -7,6 +7,8 @@ final class BadgerPreviewView: NSView {
     private let badgerWidth: CGFloat = 296
     private let badgerHeight: CGFloat = 128
     private var points: [CGPoint] = []
+    private var baselinePoints: [CGPoint] = []
+    private var qualityBits = ""
     private var note = ""
     private var message = "waiting"
 
@@ -24,6 +26,8 @@ final class BadgerPreviewView: NSView {
                 messageStart = 2
             }
             points = []
+            baselinePoints = []
+            qualityBits = ""
             note = ""
             message = parts.dropFirst(messageStart).joined(separator: ",")
             needsDisplay = true
@@ -48,6 +52,33 @@ final class BadgerPreviewView: NSView {
         }
         points = parsed
         note = coordStart + count * 2 < parts.count ? parts[coordStart + count * 2] : ""
+        baselinePoints = []
+        qualityBits = ""
+        var payloadIndex = coordStart + count * 2 + 1
+        while payloadIndex < parts.count {
+            let marker = parts[payloadIndex]
+            if marker == "B" {
+                let baselineCountIndex = payloadIndex + 1
+                guard baselineCountIndex < parts.count, let baselineCount = Int(parts[baselineCountIndex]) else { return }
+                let baselineCoordStart = baselineCountIndex + 1
+                var parsedBaseline: [CGPoint] = []
+                for index in 0..<baselineCount {
+                    let xIndex = baselineCoordStart + index * 2
+                    let yIndex = xIndex + 1
+                    guard yIndex < parts.count, let x = Double(parts[xIndex]), let y = Double(parts[yIndex]) else {
+                        return
+                    }
+                    parsedBaseline.append(CGPoint(x: x, y: y))
+                }
+                baselinePoints = parsedBaseline
+                payloadIndex = baselineCoordStart + baselineCount * 2
+            } else if marker == "Q", payloadIndex + 1 < parts.count {
+                qualityBits = parts[payloadIndex + 1].filter { $0 == "0" || $0 == "1" }
+                payloadIndex += 2
+            } else {
+                break
+            }
+        }
         message = ""
         needsDisplay = true
     }
@@ -90,11 +121,27 @@ final class BadgerPreviewView: NSView {
             return
         }
 
-        let guide = NSBezierPath()
-        guide.move(to: mapPoint(CGPoint(x: 18, y: badgerHeight / 2)))
-        guide.line(to: mapPoint(CGPoint(x: badgerWidth - 18, y: badgerHeight / 2)))
-        guide.lineWidth = 1
-        guide.stroke()
+        if baselinePoints.count > 1 {
+            let baseline = NSBezierPath()
+            baseline.move(to: mapPoint(baselinePoints[0]))
+            for point in baselinePoints.dropFirst() {
+                baseline.line(to: mapPoint(point))
+            }
+            baseline.lineWidth = 1.5
+            baseline.lineJoinStyle = .round
+            baseline.lineCapStyle = .round
+            let dash: [CGFloat] = [5, 4]
+            baseline.setLineDash(dash, count: dash.count, phase: 0)
+            NSColor.black.withAlphaComponent(0.55).setStroke()
+            baseline.stroke()
+            NSColor.black.setStroke()
+        } else {
+            let guide = NSBezierPath()
+            guide.move(to: mapPoint(CGPoint(x: 18, y: badgerHeight / 2)))
+            guide.line(to: mapPoint(CGPoint(x: badgerWidth - 18, y: badgerHeight / 2)))
+            guide.lineWidth = 1
+            guide.stroke()
+        }
 
         if points.count > 1 {
             let curve = NSBezierPath()
@@ -113,12 +160,38 @@ final class BadgerPreviewView: NSView {
             NSBezierPath(rect: CGRect(x: center.x - 4, y: center.y - 4, width: 8, height: 8)).fill()
         }
 
+        drawQualityStrip(origin: origin, scale: scale)
+
         if !note.isEmpty {
             let attrs: [NSAttributedString.Key: Any] = [
                 .font: NSFont.monospacedSystemFont(ofSize: 11, weight: .regular),
                 .foregroundColor: NSColor.black
             ]
             note.draw(at: CGPoint(x: displayRect.minX + 8, y: displayRect.minY + 8), withAttributes: attrs)
+        }
+    }
+
+    private func drawQualityStrip(origin: CGPoint, scale: CGFloat) {
+        let bits = String(qualityBits.suffix(16))
+        guard !bits.isEmpty else { return }
+        for (index, bit) in bits.enumerated() {
+            let logicalX: CGFloat = badgerWidth - 13
+            let logicalY: CGFloat = 8 + CGFloat(index * 7)
+            let rect = CGRect(
+                x: origin.x + logicalY * scale,
+                y: origin.y + logicalX * scale,
+                width: 5 * scale,
+                height: 5 * scale
+            )
+            if bit == "1" {
+                NSBezierPath(rect: rect).fill()
+            } else {
+                let miss = NSBezierPath()
+                miss.move(to: CGPoint(x: rect.minX, y: rect.midY))
+                miss.line(to: CGPoint(x: rect.maxX, y: rect.midY))
+                miss.lineWidth = max(1, scale)
+                miss.stroke()
+            }
         }
     }
 
@@ -153,7 +226,7 @@ final class PostureWatcherLauncher: NSObject, NSApplicationDelegate, AVCaptureVi
     private var frameURL: URL!
     private var burstDirURL: URL!
     private var logURL: URL!
-    private var intervalSeconds = 5.0
+    private var intervalSeconds = 15.0
     private var burstWriteIntervalSeconds = 0.25
     private var burstFrameCount = 8
     private var burstFrameIndex = 0
@@ -587,7 +660,7 @@ final class PostureWatcherLauncher: NSObject, NSApplicationDelegate, AVCaptureVi
             frameURL = supportURL.appendingPathComponent("latest-frame.jpg")
             burstDirURL = supportURL.appendingPathComponent("burst", isDirectory: true)
             let env = ProcessInfo.processInfo.environment
-            intervalSeconds = Double(env["POSTURE_WATCHER_INTERVAL_SECS"] ?? "5") ?? 5.0
+            intervalSeconds = Double(env["POSTURE_WATCHER_INTERVAL_SECS"] ?? "15") ?? 15.0
             burstWriteIntervalSeconds = Double(env["POSTURE_WATCHER_BURST_FRAME_INTERVAL_SECS"] ?? "0.25") ?? 0.25
             burstFrameCount = max(1, Int(env["POSTURE_WATCHER_BURST_FRAMES"] ?? "8") ?? 8)
             try FileManager.default.createDirectory(at: burstDirURL, withIntermediateDirectories: true)
@@ -716,8 +789,8 @@ final class PostureWatcherLauncher: NSObject, NSApplicationDelegate, AVCaptureVi
         let env = ProcessInfo.processInfo.environment
         let port = env["POSTURE_WATCHER_PORT"] ?? "/dev/cu.usbmodem83201"
         let window = env["POSTURE_WATCHER_WINDOW_SECS"] ?? "120"
-        let interval = env["POSTURE_WATCHER_INTERVAL_SECS"] ?? "5"
-        let noPersonAfter = env["POSTURE_WATCHER_NO_PERSON_AFTER_SECS"] ?? "30"
+        let interval = env["POSTURE_WATCHER_INTERVAL_SECS"] ?? "15"
+        let noPersonAfter = env["POSTURE_WATCHER_NO_PERSON_AFTER_SECS"] ?? "60"
         let rotation = env["POSTURE_WATCHER_ROTATE"] ?? "ccw90"
         let outDir = supportURL.appendingPathComponent("analysis").path
         let burstDir = supportURL.appendingPathComponent("burst", isDirectory: true).path

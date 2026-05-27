@@ -107,6 +107,27 @@ def draw_line(x1, y1, x2, y2, orientation):
     display.line(x1, y1, x2, y2)
 
 
+def draw_dashed_line(x1, y1, x2, y2, orientation, dash=9, gap=6):
+    dx = x2 - x1
+    dy = y2 - y1
+    distance = (dx * dx + dy * dy) ** 0.5
+    if distance <= 0:
+        return
+    cursor = 0
+    while cursor < distance:
+        end = min(cursor + dash, distance)
+        start_ratio = cursor / distance
+        end_ratio = end / distance
+        draw_line(
+            int(round(x1 + dx * start_ratio)),
+            int(round(y1 + dy * start_ratio)),
+            int(round(x1 + dx * end_ratio)),
+            int(round(y1 + dy * end_ratio)),
+            orientation,
+        )
+        cursor += dash + gap
+
+
 def draw_rect(x, y, w, h, orientation):
     if is_usb_bottom(orientation):
         x = WIDTH - x - w
@@ -138,6 +159,20 @@ def draw_pixel_text(text, x, y, scale, orientation):
 def draw_centered_text(text, y, scale, orientation):
     x = max(8, (WIDTH - pixel_text_width(text, scale)) // 2)
     draw_pixel_text(text, x, y, scale, orientation)
+
+
+def draw_quality_strip(bits, orientation):
+    bits = bits[-16:]
+    if not bits:
+        return
+    x = WIDTH - 13
+    y = 8
+    for bit in bits:
+        if bit == "1":
+            draw_rect(x, y, 5, 5, orientation)
+        else:
+            draw_line(x, y + 2, x + 4, y + 2, orientation)
+        y += 7
 
 
 def draw_border(orientation):
@@ -195,16 +230,26 @@ def draw_message(message, orientation):
     display.update()
 
 
-def draw_points(points, note="", orientation=USB_TOP):
+def draw_points(points, note="", orientation=USB_TOP, baseline_points=None, quality_bits=""):
+    baseline_points = baseline_points or []
     clear()
 
     # Portrait mode: place the Badger on its short edge. The body chain uses
     # the 296px axis; forward/back drift uses the 128px axis.
-    cy = HEIGHT // 2
-    display.thickness(1)
-    draw_line(18, cy, WIDTH - 18, cy, orientation)
-    draw_line(18, cy - 14, 18, cy + 14, orientation)
-    draw_line(WIDTH - 18, cy - 14, WIDTH - 18, cy + 14, orientation)
+    if len(baseline_points) > 1:
+        display.thickness(1)
+        for i in range(len(baseline_points) - 1):
+            x1, y1 = baseline_points[i]
+            x2, y2 = baseline_points[i + 1]
+            draw_dashed_line(x1, y1, x2, y2, orientation)
+        for x, y in baseline_points:
+            draw_rect(x - 2, y - 2, 5, 5, orientation)
+    else:
+        cy = HEIGHT // 2
+        display.thickness(1)
+        draw_line(18, cy, WIDTH - 18, cy, orientation)
+        draw_line(18, cy - 14, 18, cy + 14, orientation)
+        draw_line(WIDTH - 18, cy - 14, WIDTH - 18, cy + 14, orientation)
 
     if len(points) > 1:
         display.thickness(4)
@@ -220,13 +265,16 @@ def draw_points(points, note="", orientation=USB_TOP):
     if note:
         draw_pixel_text(note[:14].upper(), 8, 8, 2, orientation)
 
+    display.thickness(1)
+    draw_quality_strip(quality_bits, orientation)
+
     display.update()
 
 
 def parse_payload(line):
     parts = line.strip().split(",")
     if not parts:
-        return "", USB_TOP, None, ""
+        return "", USB_TOP, None, None, "", ""
     if parts[0] == "M":
         orientation = USB_TOP
         message_start = 1
@@ -237,10 +285,12 @@ def parse_payload(line):
             "M",
             orientation,
             None,
+            None,
+            "",
             ",".join(parts[message_start:]).strip() or "No person found",
         )
     if len(parts) < 4 or parts[0] != "P":
-        return "", USB_TOP, None, ""
+        return "", USB_TOP, None, None, "", ""
     try:
         orientation = USB_TOP
         count_index = 1
@@ -257,9 +307,29 @@ def parse_payload(line):
             points.append((x, y))
         note_index = coord_start + n * 2
         note = parts[note_index] if len(parts) > note_index else ""
-        return "P", orientation, points, note
+        baseline_points = []
+        quality_bits = ""
+        index = note_index + 1
+        while index < len(parts):
+            marker = parts[index]
+            if marker == "B" and index + 1 < len(parts):
+                baseline_n = int(parts[index + 1])
+                baseline_coord_start = index + 2
+                baseline_coords = parts[baseline_coord_start : baseline_coord_start + baseline_n * 2]
+                baseline_points = []
+                for i in range(0, len(baseline_coords), 2):
+                    x = max(0, min(WIDTH - 1, int(baseline_coords[i])))
+                    y = max(0, min(HEIGHT - 1, int(baseline_coords[i + 1])))
+                    baseline_points.append((x, y))
+                index = baseline_coord_start + baseline_n * 2
+            elif marker == "Q" and index + 1 < len(parts):
+                quality_bits = "".join([bit for bit in parts[index + 1] if bit in ("0", "1")])
+                index += 2
+            else:
+                break
+        return "P", orientation, points, baseline_points, quality_bits, note
     except Exception:
-        return "", USB_TOP, None, ""
+        return "", USB_TOP, None, None, "", ""
 
 
 def ack(message):
@@ -282,12 +352,12 @@ while True:
     if line == "PING":
         ack("OK," + PROTOCOL)
         continue
-    kind, orientation, points, note = parse_payload(line)
+    kind, orientation, points, baseline_points, quality_bits, note = parse_payload(line)
     if kind == "M":
         draw_message(note, orientation)
         ack("OK,M")
     elif kind == "P" and points:
-        draw_points(points, note, orientation)
+        draw_points(points, note, orientation, baseline_points, quality_bits)
         ack("OK,P,{}".format(len(points)))
     else:
         ack("ERR,BAD_PAYLOAD")
