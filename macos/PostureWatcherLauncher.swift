@@ -140,8 +140,10 @@ final class PostureWatcherLauncher: NSObject, NSApplicationDelegate, AVCaptureVi
     private var badgerStatusLabel: NSTextField?
     private var tagStatusLabel: NSTextField?
     private var placementStatusLabel: NSTextField?
+    private var sampleStatusLabel: NSTextField?
     private var baselineStatusLabel: NSTextField?
     private var selectedCameraName: String?
+    private var latestDetectedMode: String?
     private var analyzerOutputBuffer = ""
     private let session = AVCaptureSession()
     private let captureQueue = DispatchQueue(label: "local.posture-watcher.capture")
@@ -171,7 +173,7 @@ final class PostureWatcherLauncher: NSObject, NSApplicationDelegate, AVCaptureVi
 
     private func setupPreviewWindow() {
         let window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 260, height: 840),
+            contentRect: NSRect(x: 0, y: 0, width: 260, height: 900),
             styleMask: [.titled, .closable, .miniaturizable],
             backing: .buffered,
             defer: false
@@ -319,6 +321,24 @@ final class PostureWatcherLauncher: NSObject, NSApplicationDelegate, AVCaptureVi
         placementRow.addArrangedSubview(placementStatus)
         root.addArrangedSubview(placementRow)
 
+        let sampleRow = NSStackView()
+        sampleRow.orientation = .horizontal
+        sampleRow.alignment = .centerY
+        sampleRow.spacing = 8
+        sampleRow.translatesAutoresizingMaskIntoConstraints = false
+
+        let sampleLabel = NSTextField(labelWithString: "Samples")
+        let sampleStatus = NSTextField(labelWithString: "0/3 sit, 0/3 stand")
+        sampleStatus.textColor = .secondaryLabelColor
+        sampleStatus.alignment = .left
+        sampleStatus.translatesAutoresizingMaskIntoConstraints = false
+        sampleStatus.widthAnchor.constraint(equalToConstant: 145).isActive = true
+        sampleStatusLabel = sampleStatus
+
+        sampleRow.addArrangedSubview(sampleLabel)
+        sampleRow.addArrangedSubview(sampleStatus)
+        root.addArrangedSubview(sampleRow)
+
         let baselineRow = NSStackView()
         baselineRow.orientation = .horizontal
         baselineRow.alignment = .centerY
@@ -399,6 +419,7 @@ final class PostureWatcherLauncher: NSObject, NSApplicationDelegate, AVCaptureVi
         window.contentView = content
         previewWindow = window
         populateCameraPopup()
+        refreshSampleStatus()
         refreshBaselineStatus()
         window.center()
         window.makeKeyAndOrderFront(nil)
@@ -478,6 +499,7 @@ final class PostureWatcherLauncher: NSObject, NSApplicationDelegate, AVCaptureVi
         do {
             let urls = try saveCurrentSample()
             log("saved sample: \(urls.map { $0.path }.joined(separator: ", "))")
+            refreshSampleStatus()
             refreshBaselineStatus()
         } catch {
             log("sample save failed: \(error.localizedDescription)")
@@ -495,9 +517,11 @@ final class PostureWatcherLauncher: NSObject, NSApplicationDelegate, AVCaptureVi
             if !output.isEmpty {
                 log(output)
             }
+            refreshSampleStatus()
             refreshBaselineStatus()
         } catch {
             log("baseline calibration failed: \(error.localizedDescription)")
+            refreshSampleStatus()
             refreshBaselineStatus()
             showMessage(error.localizedDescription)
         }
@@ -804,7 +828,7 @@ final class PostureWatcherLauncher: NSObject, NSApplicationDelegate, AVCaptureVi
 
     private func saveCurrentSample() throws -> [URL] {
         let supportURL = try appSupportURL()
-        let sampleMode = currentSampleMode()
+        let sampleMode = try currentSampleMode()
         let sampleDir = supportURL
             .appendingPathComponent("samples", isDirectory: true)
             .appendingPathComponent(sampleMode.folderName, isDirectory: true)
@@ -843,6 +867,7 @@ final class PostureWatcherLauncher: NSObject, NSApplicationDelegate, AVCaptureVi
         let metadata = [
             "created_at=\(ISO8601DateFormatter().string(from: Date()))",
             "mode=\(sampleMode.title)",
+            "mode_source=\(sampleMode.source)",
             "camera=\(cameraName)",
             "frame=\(frameOutURL.lastPathComponent)"
         ].joined(separator: "\n") + "\n"
@@ -912,6 +937,27 @@ final class PostureWatcherLauncher: NSObject, NSApplicationDelegate, AVCaptureVi
         }
     }
 
+    private func refreshSampleStatus() {
+        guard let sampleStatusLabel else { return }
+        do {
+            let samples = try samplesURL()
+            let sitting = try goodSampleCount(in: samples.appendingPathComponent("sitting", isDirectory: true))
+            let standing = try goodSampleCount(in: samples.appendingPathComponent("standing", isDirectory: true))
+            let auto = try goodSampleCount(in: samples.appendingPathComponent("auto", isDirectory: true))
+            sampleStatusLabel.stringValue = "\(sitting)/3 sit, \(standing)/3 stand"
+            sampleStatusLabel.textColor = sitting >= 3 && standing >= 3 ? .systemGreen : .systemOrange
+            var tip = "Good calibration samples: sitting \(sitting), standing \(standing)."
+            if auto > 0 {
+                tip += " Auto-folder good samples are ignored by calibration: \(auto)."
+            }
+            sampleStatusLabel.toolTip = tip
+        } catch {
+            sampleStatusLabel.stringValue = "unavailable"
+            sampleStatusLabel.textColor = .systemRed
+            sampleStatusLabel.toolTip = error.localizedDescription
+        }
+    }
+
     private func keyValueFile(_ url: URL) throws -> [String: String] {
         let text = try String(contentsOf: url, encoding: .utf8)
         var values: [String: String] = [:]
@@ -921,6 +967,24 @@ final class PostureWatcherLauncher: NSObject, NSApplicationDelegate, AVCaptureVi
             values[String(parts[0]).trimmingCharacters(in: .whitespacesAndNewlines)] = String(parts[1]).trimmingCharacters(in: .whitespacesAndNewlines)
         }
         return values
+    }
+
+    private func goodSampleCount(in dir: URL) throws -> Int {
+        let fm = FileManager.default
+        guard fm.fileExists(atPath: dir.path) else { return 0 }
+        let urls = try fm.contentsOfDirectory(
+            at: dir,
+            includingPropertiesForKeys: nil,
+            options: [.skipsHiddenFiles]
+        )
+        var count = 0
+        for url in urls where url.lastPathComponent.hasSuffix("-tags.txt") {
+            let values = try keyValueFile(url)
+            if values["placement_status"] == "good" {
+                count += 1
+            }
+        }
+        return count
     }
 
     private func samplesURL() throws -> URL {
@@ -933,16 +997,25 @@ final class PostureWatcherLauncher: NSObject, NSApplicationDelegate, AVCaptureVi
         return dir.appendingPathComponent("baseline.txt")
     }
 
-    private func currentSampleMode() -> (title: String, folderName: String) {
+    private func currentSampleMode() throws -> (title: String, folderName: String, source: String) {
         let title = modePopup?.selectedItem?.title
             ?? UserDefaults.standard.string(forKey: "PostureMode")
             ?? "Auto"
+        if title == "Auto" {
+            if latestDetectedMode == "sitting" {
+                return ("Sitting", "sitting", "auto-detected")
+            }
+            if latestDetectedMode == "standing" {
+                return ("Standing", "standing", "auto-detected")
+            }
+            return ("Auto", "auto", "auto-unknown")
+        }
         let folderName = title
             .lowercased()
             .components(separatedBy: CharacterSet.alphanumerics.inverted)
             .filter { !$0.isEmpty }
             .joined(separator: "-")
-        return (title, folderName.isEmpty ? "auto" : folderName)
+        return (title, folderName.isEmpty ? "auto" : folderName, "manual")
     }
 
     private func sampleTimestamp() -> String {
@@ -1041,15 +1114,19 @@ final class PostureWatcherLauncher: NSObject, NSApplicationDelegate, AVCaptureVi
 
         switch mode {
         case "sitting":
+            latestDetectedMode = "sitting"
             autoModeLabel?.stringValue = "Sitting \(confidence)%"
             autoModeLabel?.textColor = .systemGreen
         case "standing":
+            latestDetectedMode = "standing"
             autoModeLabel?.stringValue = "Standing \(confidence)%"
             autoModeLabel?.textColor = .systemGreen
         case "unknown":
+            latestDetectedMode = nil
             autoModeLabel?.stringValue = "unknown"
             autoModeLabel?.textColor = .systemOrange
         default:
+            latestDetectedMode = nil
             autoModeLabel?.stringValue = mode
             autoModeLabel?.textColor = .secondaryLabelColor
         }

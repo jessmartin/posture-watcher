@@ -95,6 +95,8 @@ macOS should prompt for Camera permission as `Posture Watcher`. The app is the p
    ~/Library/Application Support/Posture Watcher/samples/<mode>/
    ```
 
+   If the Mode picker is `Auto`, the app saves into `samples/sitting/` or `samples/standing/` when the detected mode is known. Unknown Auto saves go into `samples/auto/` for debugging, but calibration ignores that folder.
+
 Each saved sample includes the raw frame, debug images, and a `*-tags.txt` report with marker coordinates, detected mode, placement score, and posture measurements.
 
 ## Marker Placement Guide
@@ -221,6 +223,8 @@ That command averages only `placement_status=good` reports and writes:
 The live analyzer reads that file while it runs. When a mode baseline is ready, the Badger/app note changes from raw `cva=...` to a compact baseline-relative drift such as `sit -3deg` or `std +2deg`. Sitting and standing each keep their own rolling average window, so switching desk modes does not blend the two postures together.
 
 The app's Baseline row will show `ready`, `need sitting`, `need standing`, or `needs samples` after calibration. `Open Base` opens the generated text file so you can inspect the accepted sample counts and averaged measurements.
+
+The app's Samples row counts only good sitting and standing reports. If it shows `0/3 sit, 0/3 stand`, you either have not saved enough samples yet or the saved reports still say `placement_status=check`.
 
 ### What To Tune Later
 
