@@ -121,6 +121,7 @@ final class PostureWatcherLauncher: NSObject, NSApplicationDelegate, AVCaptureVi
     private var previewWindow: NSWindow?
     private let previewView = BadgerPreviewView()
     private var cameraPopup: NSPopUpButton?
+    private var modePopup: NSPopUpButton?
     private var badgerStatusLabel: NSTextField?
     private var tagStatusLabel: NSTextField?
     private var selectedCameraName: String?
@@ -153,7 +154,7 @@ final class PostureWatcherLauncher: NSObject, NSApplicationDelegate, AVCaptureVi
 
     private func setupPreviewWindow() {
         let window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 260, height: 640),
+            contentRect: NSRect(x: 0, y: 0, width: 260, height: 705),
             styleMask: [.titled, .closable, .miniaturizable],
             backing: .buffered,
             defer: false
@@ -184,6 +185,26 @@ final class PostureWatcherLauncher: NSObject, NSApplicationDelegate, AVCaptureVi
         cameraRow.addArrangedSubview(cameraLabel)
         cameraRow.addArrangedSubview(popup)
         root.addArrangedSubview(cameraRow)
+
+        let modeRow = NSStackView()
+        modeRow.orientation = .horizontal
+        modeRow.alignment = .centerY
+        modeRow.spacing = 8
+        modeRow.translatesAutoresizingMaskIntoConstraints = false
+
+        let modeLabel = NSTextField(labelWithString: "Mode")
+        let mode = NSPopUpButton(frame: .zero, pullsDown: false)
+        mode.addItems(withTitles: ["Auto", "Sitting", "Standing"])
+        mode.selectItem(withTitle: UserDefaults.standard.string(forKey: "PostureMode") ?? "Auto")
+        mode.target = self
+        mode.action = #selector(modeSelectionChanged(_:))
+        mode.translatesAutoresizingMaskIntoConstraints = false
+        mode.widthAnchor.constraint(equalToConstant: 175).isActive = true
+        modePopup = mode
+
+        modeRow.addArrangedSubview(modeLabel)
+        modeRow.addArrangedSubview(mode)
+        root.addArrangedSubview(modeRow)
 
         let badgerRow = NSStackView()
         badgerRow.orientation = .horizontal
@@ -225,6 +246,12 @@ final class PostureWatcherLauncher: NSObject, NSApplicationDelegate, AVCaptureVi
         previewView.widthAnchor.constraint(equalToConstant: 210).isActive = true
         previewView.heightAnchor.constraint(equalToConstant: 485).isActive = true
         root.addArrangedSubview(previewView)
+
+        let stickerButton = NSButton(title: "Open Tags", target: self, action: #selector(openStickerSheet(_:)))
+        stickerButton.bezelStyle = .rounded
+        stickerButton.translatesAutoresizingMaskIntoConstraints = false
+        stickerButton.widthAnchor.constraint(equalToConstant: 210).isActive = true
+        root.addArrangedSubview(stickerButton)
 
         let content = NSView()
         content.addSubview(root)
@@ -271,6 +298,23 @@ final class PostureWatcherLauncher: NSObject, NSApplicationDelegate, AVCaptureVi
             log("AVFoundation session restarted")
         } catch {
             log("camera restart failed: \(error.localizedDescription)")
+            showMessage(error.localizedDescription)
+        }
+    }
+
+    @objc private func modeSelectionChanged(_ sender: NSPopUpButton) {
+        guard let title = sender.selectedItem?.title else { return }
+        UserDefaults.standard.set(title, forKey: "PostureMode")
+        log("posture mode changed: \(title)")
+    }
+
+    @objc private func openStickerSheet(_ sender: NSButton) {
+        do {
+            let url = try generateStickerSheet()
+            NSWorkspace.shared.open(url)
+            log("opened sticker sheet: \(url.path)")
+        } catch {
+            log("sticker sheet open failed: \(error.localizedDescription)")
             showMessage(error.localizedDescription)
         }
     }
@@ -391,8 +435,11 @@ final class PostureWatcherLauncher: NSObject, NSApplicationDelegate, AVCaptureVi
 
     private func runPostureWatcher(inputURL: URL, supportURL: URL) {
         let bundle = Bundle.main
-        guard let binaryPath = bundle.path(forResource: "posture-watcher", ofType: nil) else {
-            showMessage("Missing posture-watcher inside the app bundle.")
+        let binaryPath: String
+        do {
+            binaryPath = try postureWatcherBinaryPath()
+        } catch {
+            showMessage(error.localizedDescription)
             NSApp.terminate(nil)
             return
         }
@@ -453,6 +500,40 @@ final class PostureWatcherLauncher: NSObject, NSApplicationDelegate, AVCaptureVi
             showMessage("Could not start posture-watcher: \(error.localizedDescription)")
             NSApp.terminate(nil)
         }
+    }
+
+    private func generateStickerSheet() throws -> URL {
+        let supportURL = try appSupportURL()
+        let outURL = supportURL.appendingPathComponent("posture-tags.svg")
+        let task = Process()
+        task.executableURL = URL(fileURLWithPath: try postureWatcherBinaryPath())
+        task.arguments = [
+            "stickers",
+            "--out", outURL.path
+        ]
+        task.currentDirectoryURL = URL(fileURLWithPath: Bundle.main.resourcePath ?? NSHomeDirectory())
+
+        let pipe = Pipe()
+        task.standardOutput = pipe
+        task.standardError = pipe
+        try task.run()
+        task.waitUntilExit()
+        let data = pipe.fileHandleForReading.readDataToEndOfFile()
+        let text = String(data: data, encoding: .utf8) ?? ""
+        if !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            log(text.trimmingCharacters(in: .whitespacesAndNewlines))
+        }
+        guard task.terminationStatus == 0 else {
+            throw AppError.message("Could not generate AprilTag sticker sheet.")
+        }
+        return outURL
+    }
+
+    private func postureWatcherBinaryPath() throws -> String {
+        guard let binaryPath = Bundle.main.path(forResource: "posture-watcher", ofType: nil) else {
+            throw AppError.message("Missing posture-watcher inside the app bundle.")
+        }
+        return binaryPath
     }
 
     private func handleAnalyzerOutput(_ text: String) {
