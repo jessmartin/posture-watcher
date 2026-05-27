@@ -39,7 +39,7 @@ The two placeholder images above are intentional. Drop in real photos after the 
 - Serial port defaults to `/dev/cu.usbmodem83201`.
 - Logitech Webcam C930e, mounted sideways for maximum vertical image height.
 - AprilTags from the `tag36h11` family.
-- Badger should be used vertically, on its short edge, so the 296px axis maps to the body axis.
+- Badger should be used vertically, on its short edge. Use the macOS app's `Badger USB` picker for either `USB-C Top` or `USB-C Bottom`; the receiver rotates the curve and status text to match.
 
 ## First Setup
 
@@ -272,6 +272,7 @@ POSTURE_WATCHER_PORT="/dev/cu.usbmodem83201" \
 POSTURE_WATCHER_INTERVAL_SECS=5 \
 POSTURE_WATCHER_NO_PERSON_AFTER_SECS=30 \
 POSTURE_WATCHER_ROTATE=ccw90 \
+POSTURE_WATCHER_BADGER_ORIENTATION=usb-bottom \
 open "target/macos/Posture Watcher.app"
 ```
 

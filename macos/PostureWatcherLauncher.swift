@@ -19,16 +19,25 @@ final class BadgerPreviewView: NSView {
         guard let kind = parts.first else { return }
 
         if kind == "M" {
+            var messageStart = 1
+            if parts.count > 1 && Self.isOrientationCode(parts[1]) {
+                messageStart = 2
+            }
             points = []
             note = ""
-            message = parts.dropFirst().joined(separator: ",")
+            message = parts.dropFirst(messageStart).joined(separator: ",")
             needsDisplay = true
             return
         }
 
-        guard kind == "P", parts.count >= 2, let count = Int(parts[1]) else { return }
+        guard kind == "P", parts.count >= 2 else { return }
+        var countIndex = 1
+        if Self.isOrientationCode(parts[countIndex]) {
+            countIndex += 1
+        }
+        guard countIndex < parts.count, let count = Int(parts[countIndex]) else { return }
         var parsed: [CGPoint] = []
-        let coordStart = 2
+        let coordStart = countIndex + 1
         for index in 0..<count {
             let xIndex = coordStart + index * 2
             let yIndex = xIndex + 1
@@ -41,6 +50,10 @@ final class BadgerPreviewView: NSView {
         note = coordStart + count * 2 < parts.count ? parts[coordStart + count * 2] : ""
         message = ""
         needsDisplay = true
+    }
+
+    private static func isOrientationCode(_ value: String) -> Bool {
+        value == "T" || value == "B"
     }
 
     override func draw(_ dirtyRect: NSRect) {
@@ -122,6 +135,7 @@ final class PostureWatcherLauncher: NSObject, NSApplicationDelegate, AVCaptureVi
     private let previewView = BadgerPreviewView()
     private var cameraPopup: NSPopUpButton?
     private var modePopup: NSPopUpButton?
+    private var badgerOrientationPopup: NSPopUpButton?
     private var autoModeLabel: NSTextField?
     private var badgerStatusLabel: NSTextField?
     private var tagStatusLabel: NSTextField?
@@ -208,6 +222,30 @@ final class PostureWatcherLauncher: NSObject, NSApplicationDelegate, AVCaptureVi
         modeRow.addArrangedSubview(modeLabel)
         modeRow.addArrangedSubview(mode)
         root.addArrangedSubview(modeRow)
+
+        let orientationRow = NSStackView()
+        orientationRow.orientation = .horizontal
+        orientationRow.alignment = .centerY
+        orientationRow.spacing = 8
+        orientationRow.translatesAutoresizingMaskIntoConstraints = false
+
+        let orientationLabel = NSTextField(labelWithString: "Badger USB")
+        let orientation = NSPopUpButton(frame: .zero, pullsDown: false)
+        orientation.addItems(withTitles: ["USB-C Top", "USB-C Bottom"])
+        let savedOrientation = UserDefaults.standard.string(forKey: "BadgerOrientation")
+            ?? (ProcessInfo.processInfo.environment["POSTURE_WATCHER_BADGER_ORIENTATION"] == "usb-bottom"
+                ? "USB-C Bottom"
+                : "USB-C Top")
+        orientation.selectItem(withTitle: savedOrientation)
+        orientation.target = self
+        orientation.action = #selector(badgerOrientationChanged(_:))
+        orientation.translatesAutoresizingMaskIntoConstraints = false
+        orientation.widthAnchor.constraint(equalToConstant: 150).isActive = true
+        badgerOrientationPopup = orientation
+
+        orientationRow.addArrangedSubview(orientationLabel)
+        orientationRow.addArrangedSubview(orientation)
+        root.addArrangedSubview(orientationRow)
 
         let detectedRow = NSStackView()
         detectedRow.orientation = .horizontal
@@ -404,6 +442,13 @@ final class PostureWatcherLauncher: NSObject, NSApplicationDelegate, AVCaptureVi
         guard let title = sender.selectedItem?.title else { return }
         UserDefaults.standard.set(title, forKey: "PostureMode")
         log("posture mode changed: \(title)")
+        restartAnalyzerForModeChange()
+    }
+
+    @objc private func badgerOrientationChanged(_ sender: NSPopUpButton) {
+        guard let title = sender.selectedItem?.title else { return }
+        UserDefaults.standard.set(title, forKey: "BadgerOrientation")
+        log("Badger orientation changed: \(title)")
         restartAnalyzerForModeChange()
     }
 
@@ -608,6 +653,19 @@ final class PostureWatcherLauncher: NSObject, NSApplicationDelegate, AVCaptureVi
         }
     }
 
+    private func badgerOrientationArgument() -> String {
+        let title = badgerOrientationPopup?.selectedItem?.title
+            ?? UserDefaults.standard.string(forKey: "BadgerOrientation")
+            ?? ProcessInfo.processInfo.environment["POSTURE_WATCHER_BADGER_ORIENTATION"]
+            ?? "USB-C Top"
+        switch title {
+        case "USB-C Bottom", "usb-bottom":
+            return "usb-bottom"
+        default:
+            return "usb-top"
+        }
+    }
+
     private func runPostureWatcher(inputURL: URL, supportURL: URL) {
         let bundle = Bundle.main
         let binaryPath: String
@@ -627,6 +685,7 @@ final class PostureWatcherLauncher: NSObject, NSApplicationDelegate, AVCaptureVi
         let rotation = env["POSTURE_WATCHER_ROTATE"] ?? "ccw90"
         let outDir = supportURL.appendingPathComponent("analysis").path
         let postureMode = analyzerModeArgument()
+        let badgerOrientation = badgerOrientationArgument()
 
         let task = Process()
         task.executableURL = URL(fileURLWithPath: binaryPath)
@@ -639,7 +698,8 @@ final class PostureWatcherLauncher: NSObject, NSApplicationDelegate, AVCaptureVi
             "--no-person-after-secs", noPersonAfter,
             "--rotate", rotation,
             "--out-dir", outDir,
-            "--mode", postureMode
+            "--mode", postureMode,
+            "--badger-orientation", badgerOrientation
         ]
         if env["POSTURE_WATCHER_NO_BADGER"] == "1" || !FileManager.default.fileExists(atPath: port) {
             arguments.append("--no-badger")

@@ -72,6 +72,8 @@ enum Commands {
         send_badger: bool,
         #[arg(long, default_value = "/dev/cu.usbmodem83201")]
         port: String,
+        #[arg(long, value_enum, default_value_t = BadgerOrientation::UsbTop)]
+        badger_orientation: BadgerOrientation,
     },
     /// Analyze one frame and write latest-tags.png, latest-tags.txt, and latest-analysis.png.
     Snapshot {
@@ -85,6 +87,8 @@ enum Commands {
         send_badger: bool,
         #[arg(long, default_value = "/dev/cu.usbmodem83201")]
         port: String,
+        #[arg(long, value_enum, default_value_t = BadgerOrientation::UsbTop)]
+        badger_orientation: BadgerOrientation,
     },
     /// Analyze all tagged sample images in order, write debug images, and optionally send to Badger.
     RunSamples {
@@ -98,6 +102,8 @@ enum Commands {
         send_badger: bool,
         #[arg(long, default_value = "/dev/cu.usbmodem83201")]
         port: String,
+        #[arg(long, value_enum, default_value_t = BadgerOrientation::UsbTop)]
+        badger_orientation: BadgerOrientation,
         #[arg(long, default_value_t = 120)]
         window_secs: u64,
         #[arg(long, default_value_t = 1500)]
@@ -129,6 +135,8 @@ enum Commands {
         baseline: Option<PathBuf>,
         #[arg(long, value_enum, default_value_t = DeskModeOverride::Auto)]
         mode: DeskModeOverride,
+        #[arg(long, value_enum, default_value_t = BadgerOrientation::UsbTop)]
+        badger_orientation: BadgerOrientation,
         #[arg(long)]
         no_badger: bool,
     },
@@ -152,6 +160,8 @@ enum Commands {
         baseline: Option<PathBuf>,
         #[arg(long, value_enum, default_value_t = DeskModeOverride::Auto)]
         mode: DeskModeOverride,
+        #[arg(long, value_enum, default_value_t = BadgerOrientation::UsbTop)]
+        badger_orientation: BadgerOrientation,
         #[arg(long)]
         no_badger: bool,
         #[arg(long)]
@@ -192,6 +202,8 @@ enum Commands {
         port: String,
         #[arg(long, value_enum, default_value_t = DemoPose::Neutral)]
         pose: DemoPose,
+        #[arg(long, value_enum, default_value_t = BadgerOrientation::UsbTop)]
+        badger_orientation: BadgerOrientation,
     },
     /// Send a status message to the Badger.
     SendStatus {
@@ -199,6 +211,8 @@ enum Commands {
         port: String,
         #[arg(long, default_value = "No person found")]
         message: String,
+        #[arg(long, value_enum, default_value_t = BadgerOrientation::UsbTop)]
+        badger_orientation: BadgerOrientation,
     },
     /// Build sitting/standing posture baselines from saved good samples.
     CalibrateBaseline {
@@ -230,6 +244,21 @@ enum FrameRotation {
     Cw90,
     Ccw90,
     Deg180,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+enum BadgerOrientation {
+    UsbTop,
+    UsbBottom,
+}
+
+impl BadgerOrientation {
+    fn protocol_code(self) -> Option<&'static str> {
+        match self {
+            Self::UsbTop => None,
+            Self::UsbBottom => Some("B"),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -434,6 +463,7 @@ fn main() -> Result<()> {
             rotate,
             send_badger,
             port,
+            badger_orientation,
         } => {
             let img =
                 image::open(&input).with_context(|| format!("opening {}", input.display()))?;
@@ -446,7 +476,7 @@ fn main() -> Result<()> {
                 println!("wrote {}", out.display());
             }
             if send_badger {
-                send_to_badger(&port, &posture)?;
+                send_to_badger(&port, &posture, badger_orientation)?;
             }
             Ok(())
         }
@@ -456,13 +486,22 @@ fn main() -> Result<()> {
             rotate,
             send_badger,
             port,
-        } => snapshot_frame(&input, &out_dir, rotate, send_badger, &port),
+            badger_orientation,
+        } => snapshot_frame(
+            &input,
+            &out_dir,
+            rotate,
+            send_badger,
+            &port,
+            badger_orientation,
+        ),
         Commands::RunSamples {
             input_dir,
             out_dir,
             rotate,
             send_badger,
             port,
+            badger_orientation,
             window_secs,
             delay_ms,
         } => run_samples(
@@ -471,6 +510,7 @@ fn main() -> Result<()> {
             rotate,
             send_badger,
             &port,
+            badger_orientation,
             window_secs,
             delay_ms,
         ),
@@ -487,6 +527,7 @@ fn main() -> Result<()> {
             out_dir,
             baseline,
             mode,
+            badger_orientation,
             no_badger,
         } => live(
             &camera,
@@ -501,6 +542,7 @@ fn main() -> Result<()> {
             &out_dir,
             baseline.as_deref(),
             mode,
+            badger_orientation,
             !no_badger,
         ),
         Commands::LiveFile {
@@ -513,6 +555,7 @@ fn main() -> Result<()> {
             out_dir,
             baseline,
             mode,
+            badger_orientation,
             no_badger,
             once,
         } => live_file(
@@ -525,6 +568,7 @@ fn main() -> Result<()> {
             &out_dir,
             baseline.as_deref(),
             mode,
+            badger_orientation,
             !no_badger,
             once,
         ),
@@ -546,8 +590,16 @@ fn main() -> Result<()> {
         Commands::ListCameras => list_cameras(),
         Commands::InstallBadger { port } => install_badger(&port),
         Commands::RestoreBadger { port, backup } => restore_badger(&port, backup.as_deref()),
-        Commands::SendDemo { port, pose } => send_demo(&port, pose),
-        Commands::SendStatus { port, message } => send_badger_message(&port, &message),
+        Commands::SendDemo {
+            port,
+            pose,
+            badger_orientation,
+        } => send_demo(&port, pose, badger_orientation),
+        Commands::SendStatus {
+            port,
+            message,
+            badger_orientation,
+        } => send_badger_message(&port, &message, badger_orientation),
         Commands::CalibrateBaseline {
             samples_dir,
             out,
@@ -664,6 +716,7 @@ fn snapshot_frame(
     rotate: FrameRotation,
     send_badger_enabled: bool,
     port: &str,
+    badger_orientation: BadgerOrientation,
 ) -> Result<()> {
     fs::create_dir_all(out_dir).with_context(|| format!("creating {}", out_dir.display()))?;
     let img = image::open(input).with_context(|| format!("opening {}", input.display()))?;
@@ -695,9 +748,9 @@ fn snapshot_frame(
     println!("wrote {}", analysis.display());
     if send_badger_enabled {
         if placement.is_good() {
-            send_to_badger(port, &posture)?;
+            send_to_badger(port, &posture, badger_orientation)?;
         } else {
-            send_badger_message(port, placement.badger_message())?;
+            send_badger_message(port, placement.badger_message(), badger_orientation)?;
         }
     }
     Ok(())
@@ -709,6 +762,7 @@ fn run_samples(
     rotate: FrameRotation,
     send_badger_enabled: bool,
     port: &str,
+    badger_orientation: BadgerOrientation,
     window_secs: u64,
     delay_ms: u64,
 ) -> Result<()> {
@@ -733,7 +787,7 @@ fn run_samples(
         write_debug_image(&img, &detections, &avg, &out)?;
         println!("wrote {}", out.display());
         if send_badger_enabled {
-            publish_posture(port, &avg, None, true)?;
+            publish_posture(port, &avg, None, badger_orientation, true)?;
             thread::sleep(Duration::from_millis(delay_ms));
         }
     }
@@ -753,6 +807,7 @@ fn live(
     out_dir: &Path,
     baseline_path: Option<&Path>,
     mode_override: DeskModeOverride,
+    badger_orientation: BadgerOrientation,
     send_badger_enabled: bool,
 ) -> Result<()> {
     fs::create_dir_all(out_dir).with_context(|| format!("creating {}", out_dir.display()))?;
@@ -782,6 +837,7 @@ fn live(
             rotate,
             baseline_path,
             mode_override,
+            badger_orientation,
         ) {
             Ok(FrameAnalysisOutcome::Posture) => {}
             Ok(FrameAnalysisOutcome::MissingRequiredTags) => {}
@@ -804,6 +860,7 @@ fn live_file(
     out_dir: &Path,
     baseline_path: Option<&Path>,
     mode_override: DeskModeOverride,
+    badger_orientation: BadgerOrientation,
     send_badger_enabled: bool,
     once: bool,
 ) -> Result<()> {
@@ -839,6 +896,7 @@ fn live_file(
             rotate,
             baseline_path,
             mode_override,
+            badger_orientation,
         ) {
             Ok(FrameAnalysisOutcome::Posture) => {}
             Ok(FrameAnalysisOutcome::MissingRequiredTags) => {}
@@ -866,6 +924,7 @@ fn analyze_frame_file(
     rotate: FrameRotation,
     baseline_path: Option<&Path>,
     mode_override: DeskModeOverride,
+    badger_orientation: BadgerOrientation,
 ) -> Result<FrameAnalysisOutcome> {
     let img = image::open(input).with_context(|| format!("opening {}", input.display()))?;
     let img = apply_rotation(img, rotate);
@@ -881,7 +940,12 @@ fn analyze_frame_file(
         let report = out_dir.join("latest-tags.txt");
         write_tag_report(input, &img, &detections, None, &report)?;
         eprintln!("{}", missing_required_tags_message(&detections));
-        missing_person.record_missing(no_person_after, port, send_badger_enabled)?;
+        missing_person.record_missing(
+            no_person_after,
+            port,
+            send_badger_enabled,
+            badger_orientation,
+        )?;
         return Ok(FrameAnalysisOutcome::MissingRequiredTags);
     }
     let posture = posture_from_detections(&detections)?;
@@ -892,7 +956,12 @@ fn analyze_frame_file(
         print_posture(input, &posture, None);
         let debug = out_dir.join("latest-analysis.png");
         write_debug_image(&img, &detections, &posture, &debug)?;
-        publish_badger_message(port, placement.badger_message(), send_badger_enabled)?;
+        publish_badger_message(
+            port,
+            placement.badger_message(),
+            badger_orientation,
+            send_badger_enabled,
+        )?;
         return Ok(FrameAnalysisOutcome::InvalidPlacement);
     }
     let avg = windows
@@ -911,7 +980,13 @@ fn analyze_frame_file(
     print_posture(input, &avg, drift.as_ref());
     let debug = out_dir.join("latest-analysis.png");
     write_debug_image(&img, &detections, &avg, &debug)?;
-    publish_posture(port, &avg, drift.as_ref(), send_badger_enabled)?;
+    publish_posture(
+        port,
+        &avg,
+        drift.as_ref(),
+        badger_orientation,
+        send_badger_enabled,
+    )?;
     Ok(FrameAnalysisOutcome::Posture)
 }
 
@@ -1144,7 +1219,7 @@ fn doctor_baseline_display_smoke(files: &[PathBuf], out_dir: &Path) -> Result<St
         "expected baseline note `sit +5deg`, got `{note}` using {}",
         path.display()
     );
-    let payload = badger_payload(&avg, Some(&note));
+    let payload = badger_payload(&avg, Some(&note), BadgerOrientation::UsbTop);
     ensure!(
         payload.trim().ends_with(",sit +5deg"),
         "expected Badger payload to end with baseline note, got `{}`",
@@ -1248,7 +1323,7 @@ fn restore_badger(port: &str, backup: Option<&Path>) -> Result<()> {
     Ok(())
 }
 
-fn send_demo(port: &str, pose: DemoPose) -> Result<()> {
+fn send_demo(port: &str, pose: DemoPose, badger_orientation: BadgerOrientation) -> Result<()> {
     let points = match pose {
         DemoPose::Neutral => vec![
             (SHOULDER_ID, Point::new(230.0, 64.0)),
@@ -1268,7 +1343,7 @@ fn send_demo(port: &str, pose: DemoPose) -> Result<()> {
         cva_degrees: None,
         head_forward_px: None,
     };
-    send_to_badger(port, &posture)
+    send_to_badger(port, &posture, badger_orientation)
 }
 
 fn capture_frame(
@@ -2175,8 +2250,12 @@ fn draw_tag_outline(canvas: &mut RgbaImage, det: &DetectionPoint) {
     }
 }
 
-fn send_to_badger(port_name: &str, posture: &PostureFrame) -> Result<()> {
-    let line = badger_payload(posture, None);
+fn send_to_badger(
+    port_name: &str,
+    posture: &PostureFrame,
+    badger_orientation: BadgerOrientation,
+) -> Result<()> {
+    let line = badger_payload(posture, None, badger_orientation);
     emit_display_payload(&line);
     send_payload_to_badger(port_name, &line, "OK,P,")
 }
@@ -2185,12 +2264,13 @@ fn publish_posture(
     port_name: &str,
     posture: &PostureFrame,
     drift: Option<&BaselineDrift>,
+    badger_orientation: BadgerOrientation,
     send_badger_enabled: bool,
 ) -> Result<()> {
     let note = drift
         .map(BaselineDrift::note)
         .unwrap_or_else(|| posture_note(posture));
-    let line = badger_payload(posture, Some(&note));
+    let line = badger_payload(posture, Some(&note), badger_orientation);
     emit_display_payload(&line);
     if send_badger_enabled {
         if let Err(err) = send_payload_to_badger(port_name, &line, "OK,P,") {
@@ -2201,8 +2281,13 @@ fn publish_posture(
     Ok(())
 }
 
-fn publish_badger_message(port_name: &str, message: &str, send_badger_enabled: bool) -> Result<()> {
-    let line = badger_message_payload(message);
+fn publish_badger_message(
+    port_name: &str,
+    message: &str,
+    badger_orientation: BadgerOrientation,
+    send_badger_enabled: bool,
+) -> Result<()> {
+    let line = badger_message_payload(message, badger_orientation);
     emit_display_payload(&line);
     if send_badger_enabled {
         if let Err(err) = send_payload_to_badger(port_name, &line, "OK,M") {
@@ -2213,8 +2298,12 @@ fn publish_badger_message(port_name: &str, message: &str, send_badger_enabled: b
     Ok(())
 }
 
-fn send_badger_message(port_name: &str, message: &str) -> Result<()> {
-    let line = badger_message_payload(message);
+fn send_badger_message(
+    port_name: &str,
+    message: &str,
+    badger_orientation: BadgerOrientation,
+) -> Result<()> {
+    let line = badger_message_payload(message, badger_orientation);
     emit_display_payload(&line);
     send_payload_to_badger(port_name, &line, "OK,M")
 }
@@ -2323,8 +2412,16 @@ fn read_badger_reply(port: &mut dyn SerialPort, timeout: Duration) -> Result<Str
     bail!("timed out waiting for Badger ACK")
 }
 
-fn badger_payload(posture: &PostureFrame, note: Option<&str>) -> String {
-    let mut parts = vec!["P".to_string(), posture.display_points.len().to_string()];
+fn badger_payload(
+    posture: &PostureFrame,
+    note: Option<&str>,
+    badger_orientation: BadgerOrientation,
+) -> String {
+    let mut parts = vec!["P".to_string()];
+    if let Some(code) = badger_orientation.protocol_code() {
+        parts.push(code.to_string());
+    }
+    parts.push(posture.display_points.len().to_string());
     for (_, p) in &posture.display_points {
         parts.push((p.x.round() as i32).clamp(0, BADGER_WIDTH - 1).to_string());
         parts.push((p.y.round() as i32).clamp(0, BADGER_HEIGHT - 1).to_string());
@@ -2351,8 +2448,11 @@ fn posture_note(posture: &PostureFrame) -> String {
     )
 }
 
-fn badger_message_payload(message: &str) -> String {
-    format!("M,{}\n", clean_payload_text(message))
+fn badger_message_payload(message: &str, badger_orientation: BadgerOrientation) -> String {
+    match badger_orientation.protocol_code() {
+        Some(code) => format!("M,{code},{}\n", clean_payload_text(message)),
+        None => format!("M,{}\n", clean_payload_text(message)),
+    }
 }
 
 fn clean_payload_text(message: &str) -> String {
@@ -2493,11 +2593,17 @@ impl MissingPersonState {
         threshold: Duration,
         port: &str,
         send_badger_enabled: bool,
+        badger_orientation: BadgerOrientation,
     ) -> Result<()> {
         let now = Instant::now();
         let first_missing = *self.first_missing.get_or_insert(now);
         if !self.message_sent && now.duration_since(first_missing) >= threshold {
-            publish_badger_message(port, NO_PERSON_MESSAGE, send_badger_enabled)?;
+            publish_badger_message(
+                port,
+                NO_PERSON_MESSAGE,
+                badger_orientation,
+                send_badger_enabled,
+            )?;
             self.message_sent = true;
         }
         Ok(())
@@ -2868,8 +2974,24 @@ mod tests {
             (C7_ID, Point::new(126.0, 70.0)),
             (EAR_ID, Point::new(32.0, 80.0)),
         ];
-        let payload = badger_payload(&posture, Some("sit -3deg"));
+        let payload = badger_payload(&posture, Some("sit -3deg"), BadgerOrientation::UsbTop);
         assert_eq!(payload.trim(), "P,3,204,64,126,70,32,80,sit -3deg");
+    }
+
+    #[test]
+    fn badger_payload_can_request_usb_bottom_orientation() {
+        let mut posture = test_posture_frame(47.2, 18.0);
+        posture.display_points = vec![
+            (SHOULDER_ID, Point::new(204.0, 64.0)),
+            (C7_ID, Point::new(126.0, 70.0)),
+            (EAR_ID, Point::new(32.0, 80.0)),
+        ];
+        let payload = badger_payload(&posture, Some("sit -3deg"), BadgerOrientation::UsbBottom);
+        assert_eq!(payload.trim(), "P,B,3,204,64,126,70,32,80,sit -3deg");
+        assert_eq!(
+            badger_message_payload("Check markers", BadgerOrientation::UsbBottom).trim(),
+            "M,B,Check markers"
+        );
     }
 
     #[test]
