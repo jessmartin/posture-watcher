@@ -220,6 +220,7 @@ Expected checks:
 - A one-frame capture succeeds, or a fresh app frame exists.
 - Badger receiver answers `OK,POSTURE_WATCHER_BADGER_V2`.
 - Tagged sample analysis detects the posture tags.
+- Baseline/manual-mode smoke produces a baseline-relative Badger note.
 
 ## CLI Toolbox
 

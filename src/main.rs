@@ -1091,6 +1091,15 @@ fn doctor(
         println!("FAIL no tagged samples available");
     }
 
+    println!("doctor: checking baseline/manual-mode display payload");
+    match doctor_baseline_display_smoke(&files, out_dir) {
+        Ok(note) => println!("OK baseline display payload: {note}"),
+        Err(err) => {
+            failures.push(format!("baseline display smoke failed: {err:#}"));
+            println!("FAIL baseline display smoke: {err:#}");
+        }
+    }
+
     if failures.is_empty() {
         println!("doctor: all checks passed");
         Ok(())
@@ -1101,6 +1110,60 @@ fn doctor(
         }
         bail!("doctor checks failed")
     }
+}
+
+fn doctor_baseline_display_smoke(files: &[PathBuf], out_dir: &Path) -> Result<String> {
+    let (path, posture) = first_good_sample_posture(files)?;
+    let cva = posture
+        .cva_degrees
+        .context("doctor sample did not produce a CVA measurement")?;
+    let head = posture
+        .head_forward_px
+        .context("doctor sample did not produce head-forward measurement")?;
+    let baseline_path = out_dir.join("doctor-baseline.txt");
+    fs::write(
+        &baseline_path,
+        format!(
+            "created_at_unix=0\nsamples_dir={}\nmin_samples_per_mode=1\nmode.sitting.status=ready\nmode.sitting.accepted=1\nmode.sitting.cva_degrees.mean={:.2}\nmode.sitting.head_forward_px.mean={:.2}\nmode.standing.status=needs_more_samples\nmode.standing.accepted=0\n",
+            out_dir.display(),
+            cva - 5.0,
+            head
+        ),
+    )
+    .with_context(|| format!("writing {}", baseline_path.display()))?;
+
+    let mut windows = ModeRollingWindows::new(Duration::from_secs(120));
+    let avg = windows
+        .push(DetectedDeskMode::Sitting, posture)
+        .context("doctor smoke rolling average was empty")?;
+    let drift = baseline_drift_for_file(&baseline_path, DetectedDeskMode::Sitting, &avg)?
+        .context("doctor smoke baseline drift was unavailable")?;
+    let note = drift.note();
+    ensure!(
+        note == "sit +5deg",
+        "expected baseline note `sit +5deg`, got `{note}` using {}",
+        path.display()
+    );
+    let payload = badger_payload(&avg, Some(&note));
+    ensure!(
+        payload.trim().ends_with(",sit +5deg"),
+        "expected Badger payload to end with baseline note, got `{}`",
+        payload.trim()
+    );
+    Ok(note)
+}
+
+fn first_good_sample_posture(files: &[PathBuf]) -> Result<(PathBuf, PostureFrame)> {
+    for path in files {
+        let img = image::open(path).with_context(|| format!("opening {}", path.display()))?;
+        let detections = detect_tags(&img)?;
+        if !estimate_placement_from_detections(&detections).is_good() {
+            continue;
+        }
+        let posture = posture_from_detections(&detections)?;
+        return Ok((path.clone(), posture));
+    }
+    bail!("no tagged sample with good marker placement was available")
 }
 
 fn imagesnap_list_output() -> Result<std::process::Output> {
