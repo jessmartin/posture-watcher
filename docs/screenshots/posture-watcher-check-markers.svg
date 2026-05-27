@@ -1,0 +1,41 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="520" height="780" viewBox="0 0 520 780" role="img" aria-labelledby="title desc">
+  <title id="title">Posture Watcher macOS app showing marker placement warning</title>
+  <desc id="desc">A stylized screenshot of the Posture Watcher app with Badger connected, tags visible, placement check, and a Check markers display.</desc>
+  <rect width="520" height="780" rx="28" fill="#242724"/>
+  <rect x="18" y="18" width="484" height="744" rx="20" fill="#2f322f"/>
+  <circle cx="54" cy="50" r="12" fill="#ff5f57"/>
+  <circle cx="90" cy="50" r="12" fill="#ffbd2e"/>
+  <circle cx="126" cy="50" r="12" fill="#28c840"/>
+  <text x="260" y="58" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, Segoe UI, sans-serif" font-size="20" font-weight="700" fill="#e8e8e8">Posture Watcher</text>
+
+  <g font-family="-apple-system, BlinkMacSystemFont, Segoe UI, sans-serif" font-size="22">
+    <text x="50" y="116" fill="#e8e8e8">Camera</text>
+    <rect x="150" y="88" width="310" height="40" rx="8" fill="#626862"/>
+    <text x="166" y="115" fill="#f4f4f4" font-size="18">Logitech Webcam C930e</text>
+
+    <text x="50" y="168" fill="#e8e8e8">Mode</text>
+    <rect x="150" y="140" width="310" height="40" rx="8" fill="#626862"/>
+    <text x="166" y="167" fill="#f4f4f4" font-size="18">Auto</text>
+
+    <text x="50" y="220" fill="#e8e8e8">Detected</text>
+    <text x="178" y="220" fill="#6fe28b" font-weight="700">Sitting 95%</text>
+
+    <text x="50" y="272" fill="#e8e8e8">Badger</text>
+    <text x="178" y="272" fill="#6fe28b" font-weight="700">connected</text>
+
+    <text x="50" y="324" fill="#e8e8e8">Tags</text>
+    <text x="178" y="324" fill="#6fe28b" font-weight="700">ready: ear C7 shoulder hip</text>
+
+    <text x="50" y="376" fill="#e8e8e8">Placement</text>
+    <text x="178" y="376" fill="#ffbd4a" font-weight="700">check 30%</text>
+  </g>
+
+  <rect x="50" y="410" width="420" height="250" fill="#fff"/>
+  <rect x="50" y="410" width="420" height="250" fill="none" stroke="#111" stroke-width="2"/>
+  <text x="260" y="540" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, Segoe UI, sans-serif" font-size="30" font-weight="700" fill="#111">Check markers</text>
+
+  <rect x="50" y="690" width="195" height="44" rx="8" fill="#6a6f6a"/>
+  <text x="147" y="719" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, Segoe UI, sans-serif" font-size="19" font-weight="700" fill="#f5f5f5">Open Debug</text>
+  <rect x="275" y="690" width="195" height="44" rx="8" fill="#6a6f6a"/>
+  <text x="372" y="719" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, Segoe UI, sans-serif" font-size="19" font-weight="700" fill="#f5f5f5">Open Tags</text>
+</svg>
