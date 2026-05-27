@@ -126,6 +126,7 @@ final class PostureWatcherLauncher: NSObject, NSApplicationDelegate, AVCaptureVi
     private var badgerStatusLabel: NSTextField?
     private var tagStatusLabel: NSTextField?
     private var placementStatusLabel: NSTextField?
+    private var baselineStatusLabel: NSTextField?
     private var selectedCameraName: String?
     private var analyzerOutputBuffer = ""
     private let session = AVCaptureSession()
@@ -156,7 +157,7 @@ final class PostureWatcherLauncher: NSObject, NSApplicationDelegate, AVCaptureVi
 
     private func setupPreviewWindow() {
         let window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 260, height: 820),
+            contentRect: NSRect(x: 0, y: 0, width: 260, height: 840),
             styleMask: [.titled, .closable, .miniaturizable],
             backing: .buffered,
             defer: false
@@ -280,9 +281,27 @@ final class PostureWatcherLauncher: NSObject, NSApplicationDelegate, AVCaptureVi
         placementRow.addArrangedSubview(placementStatus)
         root.addArrangedSubview(placementRow)
 
+        let baselineRow = NSStackView()
+        baselineRow.orientation = .horizontal
+        baselineRow.alignment = .centerY
+        baselineRow.spacing = 8
+        baselineRow.translatesAutoresizingMaskIntoConstraints = false
+
+        let baselineLabel = NSTextField(labelWithString: "Baseline")
+        let baselineStatus = NSTextField(labelWithString: "not set")
+        baselineStatus.textColor = .secondaryLabelColor
+        baselineStatus.alignment = .left
+        baselineStatus.translatesAutoresizingMaskIntoConstraints = false
+        baselineStatus.widthAnchor.constraint(equalToConstant: 145).isActive = true
+        baselineStatusLabel = baselineStatus
+
+        baselineRow.addArrangedSubview(baselineLabel)
+        baselineRow.addArrangedSubview(baselineStatus)
+        root.addArrangedSubview(baselineRow)
+
         previewView.translatesAutoresizingMaskIntoConstraints = false
         previewView.widthAnchor.constraint(equalToConstant: 210).isActive = true
-        previewView.heightAnchor.constraint(equalToConstant: 485).isActive = true
+        previewView.heightAnchor.constraint(equalToConstant: 455).isActive = true
         root.addArrangedSubview(previewView)
 
         let buttonRow = NSStackView()
@@ -311,6 +330,26 @@ final class PostureWatcherLauncher: NSObject, NSApplicationDelegate, AVCaptureVi
         saveButton.widthAnchor.constraint(equalToConstant: 210).isActive = true
         root.addArrangedSubview(saveButton)
 
+        let baselineButtonRow = NSStackView()
+        baselineButtonRow.orientation = .horizontal
+        baselineButtonRow.alignment = .centerY
+        baselineButtonRow.spacing = 8
+        baselineButtonRow.translatesAutoresizingMaskIntoConstraints = false
+
+        let calibrateButton = NSButton(title: "Calibrate", target: self, action: #selector(calibrateBaseline(_:)))
+        calibrateButton.bezelStyle = .rounded
+        calibrateButton.translatesAutoresizingMaskIntoConstraints = false
+        calibrateButton.widthAnchor.constraint(equalToConstant: 101).isActive = true
+
+        let openBaselineButton = NSButton(title: "Open Base", target: self, action: #selector(openBaseline(_:)))
+        openBaselineButton.bezelStyle = .rounded
+        openBaselineButton.translatesAutoresizingMaskIntoConstraints = false
+        openBaselineButton.widthAnchor.constraint(equalToConstant: 101).isActive = true
+
+        baselineButtonRow.addArrangedSubview(calibrateButton)
+        baselineButtonRow.addArrangedSubview(openBaselineButton)
+        root.addArrangedSubview(baselineButtonRow)
+
         let content = NSView()
         content.addSubview(root)
         NSLayoutConstraint.activate([
@@ -322,6 +361,7 @@ final class PostureWatcherLauncher: NSObject, NSApplicationDelegate, AVCaptureVi
         window.contentView = content
         previewWindow = window
         populateCameraPopup()
+        refreshBaselineStatus()
         window.center()
         window.makeKeyAndOrderFront(nil)
     }
@@ -392,8 +432,41 @@ final class PostureWatcherLauncher: NSObject, NSApplicationDelegate, AVCaptureVi
         do {
             let urls = try saveCurrentSample()
             log("saved sample: \(urls.map { $0.path }.joined(separator: ", "))")
+            refreshBaselineStatus()
         } catch {
             log("sample save failed: \(error.localizedDescription)")
+            showMessage(error.localizedDescription)
+        }
+    }
+
+    @objc private func calibrateBaseline(_ sender: NSButton) {
+        do {
+            sender.isEnabled = false
+            baselineStatusLabel?.stringValue = "calibrating"
+            baselineStatusLabel?.textColor = .systemOrange
+            defer { sender.isEnabled = true }
+            let output = try runBaselineCalibration()
+            if !output.isEmpty {
+                log(output)
+            }
+            refreshBaselineStatus()
+        } catch {
+            log("baseline calibration failed: \(error.localizedDescription)")
+            refreshBaselineStatus()
+            showMessage(error.localizedDescription)
+        }
+    }
+
+    @objc private func openBaseline(_ sender: NSButton) {
+        do {
+            let url = try baselineFileURL()
+            guard FileManager.default.fileExists(atPath: url.path) else {
+                throw AppError.message("No baseline file yet. Save good sitting and standing samples, then click Calibrate.")
+            }
+            NSWorkspace.shared.open(url)
+            log("opened baseline: \(url.path)")
+        } catch {
+            log("open baseline failed: \(error.localizedDescription)")
             showMessage(error.localizedDescription)
         }
     }
@@ -679,6 +752,87 @@ final class PostureWatcherLauncher: NSObject, NSApplicationDelegate, AVCaptureVi
         savedURLs.append(metadataURL)
 
         return savedURLs
+    }
+
+    private func runBaselineCalibration() throws -> String {
+        let task = Process()
+        task.executableURL = URL(fileURLWithPath: try postureWatcherBinaryPath())
+        task.arguments = [
+            "calibrate-baseline",
+            "--samples-dir", try samplesURL().path,
+            "--out", try baselineFileURL().path
+        ]
+        task.currentDirectoryURL = URL(fileURLWithPath: Bundle.main.resourcePath ?? NSHomeDirectory())
+
+        let pipe = Pipe()
+        task.standardOutput = pipe
+        task.standardError = pipe
+        try task.run()
+        task.waitUntilExit()
+        let data = pipe.fileHandleForReading.readDataToEndOfFile()
+        let text = String(data: data, encoding: .utf8) ?? ""
+        guard task.terminationStatus == 0 else {
+            throw AppError.message(text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "Could not calibrate baseline." : text)
+        }
+        return text.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private func refreshBaselineStatus() {
+        guard let baselineStatusLabel else { return }
+        do {
+            let url = try baselineFileURL()
+            guard FileManager.default.fileExists(atPath: url.path) else {
+                baselineStatusLabel.stringValue = "not set"
+                baselineStatusLabel.textColor = .secondaryLabelColor
+                baselineStatusLabel.toolTip = "Save good Sitting and Standing samples, then click Calibrate."
+                return
+            }
+            let values = try keyValueFile(url)
+            let standing = values["mode.standing.status"] ?? "unknown"
+            let sitting = values["mode.sitting.status"] ?? "unknown"
+            let standingCount = values["mode.standing.accepted"] ?? "0"
+            let sittingCount = values["mode.sitting.accepted"] ?? "0"
+
+            if standing == "ready" && sitting == "ready" {
+                baselineStatusLabel.stringValue = "ready"
+                baselineStatusLabel.textColor = .systemGreen
+            } else if standing == "ready" {
+                baselineStatusLabel.stringValue = "need sitting"
+                baselineStatusLabel.textColor = .systemOrange
+            } else if sitting == "ready" {
+                baselineStatusLabel.stringValue = "need standing"
+                baselineStatusLabel.textColor = .systemOrange
+            } else {
+                baselineStatusLabel.stringValue = "needs samples"
+                baselineStatusLabel.textColor = .systemOrange
+            }
+            baselineStatusLabel.toolTip = "standing \(standingCount), sitting \(sittingCount)"
+        } catch {
+            baselineStatusLabel.stringValue = "error"
+            baselineStatusLabel.textColor = .systemRed
+            baselineStatusLabel.toolTip = error.localizedDescription
+        }
+    }
+
+    private func keyValueFile(_ url: URL) throws -> [String: String] {
+        let text = try String(contentsOf: url, encoding: .utf8)
+        var values: [String: String] = [:]
+        for line in text.split(separator: "\n") {
+            let parts = line.split(separator: "=", maxSplits: 1, omittingEmptySubsequences: false)
+            guard parts.count == 2 else { continue }
+            values[String(parts[0]).trimmingCharacters(in: .whitespacesAndNewlines)] = String(parts[1]).trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+        return values
+    }
+
+    private func samplesURL() throws -> URL {
+        try appSupportURL().appendingPathComponent("samples", isDirectory: true)
+    }
+
+    private func baselineFileURL() throws -> URL {
+        let dir = try appSupportURL().appendingPathComponent("calibration", isDirectory: true)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        return dir.appendingPathComponent("baseline.txt")
     }
 
     private func currentSampleMode() -> (title: String, folderName: String) {

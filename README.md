@@ -86,6 +86,7 @@ macOS should prompt for Camera permission as `Posture Watcher`. The app is the p
    - `Badger connected` means the e-ink receiver is ACKing payloads.
    - `Tags ready` means the required tags are visible.
    - `Placement good` means the marker geometry is plausible enough to show a curve.
+   - `Baseline ready` means both sitting and standing have enough good samples.
    - A placement action like `Move ear tag up` means the tags are visible but probably wrong.
 
 4. Use `Save Sample` whenever you have a useful sitting, standing, good, or bad setup. Samples are saved under:
@@ -147,7 +148,7 @@ Do not calibrate against a universal "perfect posture" shape. Calibrate against 
 4. Hit `Save Sample` three times over a minute.
 5. Repeat the same process in `Sitting` mode.
 
-Those saved samples become the reference set for your personal baseline. Once you have a few good samples in each mode, build the baseline file:
+Those saved samples become the reference set for your personal baseline. Once you have a few good samples in each mode, click `Calibrate` in the macOS app or build the baseline file from the CLI:
 
 ```sh
 cargo run -- calibrate-baseline
@@ -160,6 +161,8 @@ That command averages only `placement_status=good` reports and writes:
 ```
 
 Use that file for future tuning: the live curve should drift from your own sitting and standing baselines rather than judging every frame against a generic spine curve.
+
+The app's Baseline row will show `ready`, `need sitting`, `need standing`, or `needs samples` after calibration. `Open Base` opens the generated text file so you can inspect the accepted sample counts and averaged measurements.
 
 ### What To Tune Later
 
