@@ -78,7 +78,9 @@ PIXEL_FONT = {
 
 
 MESSAGE_PRESETS = {
+    "aim c7 flag": ["AIM C7", "FLAG"],
     "camera access needed": ["CAMERA", "ACCESS"],
+    "check c7 flag": ["CHECK C7", "FLAG"],
     "check markers": ["CHECK", "MARKERS"],
     "move closer": ["MOVE", "CLOSER"],
     "move ear tag up": ["MOVE EAR", "TAG UP"],

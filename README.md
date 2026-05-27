@@ -74,6 +74,8 @@ macOS should prompt for Camera permission as `Posture Watcher`. The app is the p
    cargo run -- stickers --open
    ```
 
+   The sheet includes the four flat tags plus a foldable `C7 side-facing flag template`. Use that flag for `tag36h11-1`; a flat C7 sticker will point backward and disappear from a side camera.
+
 2. Put the tags on:
 
    - `tag36h11-0`: ear / tragus region
@@ -131,6 +133,14 @@ With the camera at your side, do not stick this AprilTag flat to the back of you
 
 The anchor point should still be C7, but the readable AprilTag face must be visible to the side camera. If the C7 tag moves with fabric instead of the neck, the app may produce confident-looking but wrong feedback.
 
+Build the C7 flag like a tiny folded place card:
+
+1. Print the generated sticker sheet and cut out the `C7 side-facing flag template`.
+2. Put the `ANCHOR` area directly over C7 using skin-safe medical tape or a tight base layer.
+3. Fold the tag panel on the dashed line so the tag face points toward the camera. If the camera is on your left, the tag face points left; if the camera is on your right, it points right.
+4. Stiffen the flag with a second layer of tape or thin cardstock so it does not curl.
+5. Keep the flag short. A long floppy tab will exaggerate neck motion and make the line look more precise than it is.
+
 ### `tag36h11-2`: Shoulder / Acromion
 
 Use the acromion: the bony roof at the outside/top of the shoulder. You can usually find it by tracing the collarbone outward until you reach the flat bony shelf at the shoulder tip.
@@ -155,7 +165,7 @@ Before trusting the curve, look for this sequence in the app:
 2. `Placement good`: the tag geometry is plausible.
 3. `Detected Sitting` or `Detected Standing`: mode detection agrees with your actual desk mode, or you have selected the mode manually.
 
-If the app says `Move ear tag up`, `Recheck ear and C7`, `Move shoulder tag down`, or `Move closer`, treat that as a setup problem. Fix the stickers before saving calibration samples or responding to the Badger curve.
+If the app says `Aim C7 flag`, `Move ear tag up`, `Recheck ear and C7`, `Move shoulder tag down`, or `Move closer`, treat that as a setup problem. Fix the stickers before saving calibration samples or responding to the Badger curve.
 
 ## Safety Rails
 
@@ -171,6 +181,12 @@ If tags are visible but the geometry is implausible, the Badger gives a short co
 
 ```text
 Move ear tag up
+```
+
+If the side camera can see the ear and shoulder but not C7, the Badger/app will instead point you at the physical flag setup:
+
+```text
+Aim C7 flag
 ```
 
 That prevents the e-ink display from encouraging posture changes based on bad marker placement. Current placement checks include things like whether the ear marker is actually above C7 and whether the ear-to-C7 angle is geometrically plausible. The fallback message is `Check markers` when the analyzer cannot choose a more specific action.

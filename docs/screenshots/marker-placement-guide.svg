@@ -6,7 +6,8 @@
 
   <g font-family="-apple-system, BlinkMacSystemFont, Segoe UI, sans-serif">
     <text x="70" y="94" font-size="34" font-weight="700" fill="#111">Place all four tags on the camera-facing side</text>
-    <text x="70" y="132" font-size="20" fill="#444">The app needs a clean side view. Keep hair, loose collars, and shirt fabric away from the tag faces.</text>
+    <text x="70" y="132" font-size="20" fill="#444">The app needs a clean side view.</text>
+    <text x="70" y="158" font-size="20" fill="#444">Keep hair, loose collars, and shirt fabric away from the tag faces.</text>
   </g>
 
   <g transform="translate(145 142)">
@@ -42,11 +43,13 @@
 
     <!-- C7 -->
     <g>
-      <circle cx="330" cy="225" r="18" fill="#ef6f6c" stroke="#111" stroke-width="4"/>
-      <rect x="317" y="212" width="26" height="26" rx="3" fill="#fff" stroke="#111" stroke-width="2"/>
-      <rect x="321" y="216" width="7" height="7" fill="#111"/>
-      <rect x="332" y="216" width="7" height="7" fill="#111"/>
-      <rect x="321" y="227" width="7" height="7" fill="#111"/>
+      <circle cx="330" cy="225" r="7" fill="#ef6f6c" stroke="#111" stroke-width="3"/>
+      <path d="M337 225 L356 218 L356 246 L337 239 Z" fill="#ffe6e6" stroke="#111" stroke-width="2"/>
+      <rect x="356" y="218" width="26" height="26" rx="3" fill="#fff" stroke="#111" stroke-width="2"/>
+      <rect x="360" y="222" width="7" height="7" fill="#111"/>
+      <rect x="371" y="222" width="7" height="7" fill="#111"/>
+      <rect x="360" y="233" width="7" height="7" fill="#111"/>
+      <text x="346" y="214" font-size="13" font-weight="700" fill="#111">fold</text>
     </g>
 
     <!-- Shoulder / acromion -->
@@ -70,7 +73,7 @@
     <!-- Callout lines -->
     <g stroke="#111" stroke-width="3" fill="none">
       <path d="M205 129 L76 120"/>
-      <path d="M330 225 L484 210"/>
+      <path d="M382 231 L484 210"/>
       <path d="M244 300 L74 318"/>
       <path d="M334 438 L492 444"/>
     </g>
@@ -87,9 +90,9 @@
     <g transform="translate(550 318)">
       <rect width="284" height="110" rx="10" fill="#ffe6e6" stroke="#111" stroke-width="2"/>
       <text x="16" y="30" font-size="22" font-weight="700" fill="#111">tag 1: C7 flag</text>
-      <text x="16" y="60" font-size="17" fill="#333">Anchor at the lower-neck</text>
-      <text x="16" y="81" font-size="17" fill="#333">bump, but turn the tag face</text>
-      <text x="16" y="102" font-size="17" fill="#333">sideways toward the camera.</text>
+      <text x="16" y="60" font-size="17" fill="#333">Anchor over the C7 bump.</text>
+      <text x="16" y="81" font-size="17" fill="#333">Fold the AprilTag panel so</text>
+      <text x="16" y="102" font-size="17" fill="#333">its face points at camera.</text>
     </g>
 
     <g transform="translate(56 430)">

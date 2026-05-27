@@ -351,8 +351,8 @@ impl PlacementEstimate {
         Self::new(PlacementStatus::Check, score, action, detail)
     }
 
-    fn missing(detail: impl Into<String>) -> Self {
-        Self::new(PlacementStatus::Missing, 0, "Place missing tags", detail)
+    fn missing_with_action(action: impl Into<String>, detail: impl Into<String>) -> Self {
+        Self::new(PlacementStatus::Missing, 0, action, detail)
     }
 
     fn is_good(&self) -> bool {
@@ -644,11 +644,17 @@ fn generate_stickers(out: &Path, tag_mm: f32) -> Result<()> {
             xml_escape(label),
             id
         ));
+        let hint = if *id == C7_ID {
+            "Use C7 flag below; face camera."
+        } else {
+            "Print at 100%; tape to skin/tight layer."
+        };
         svg.push_str(&format!(
-            r#"<text class="tiny" x="{}" y="{}">Print at 100%; tape to skin/tight layer.</text>
+            r#"<text class="tiny" x="{}" y="{}">{}</text>
 "#,
             x,
-            y + tag_mm + 9.0
+            y + tag_mm + 9.0,
+            xml_escape(hint)
         ));
         svg.push_str(&tag_svg(*id, x, y, tag_mm)?);
         svg.push_str(&format!(
@@ -656,10 +662,62 @@ fn generate_stickers(out: &Path, tag_mm: f32) -> Result<()> {
 "#
         ));
     }
+    svg.push_str(&c7_flag_template_svg(
+        margin,
+        margin + 2.0 * cell_h + 12.0,
+        tag_mm,
+    )?);
     svg.push_str("</svg>\n");
     fs::write(out, svg).with_context(|| format!("writing {}", out.display()))?;
     println!("wrote {}", out.display());
     Ok(())
+}
+
+fn c7_flag_template_svg(x: f32, y: f32, tag_mm: f32) -> Result<String> {
+    let anchor_w = 30.0_f32;
+    let hinge_w = 8.0_f32;
+    let tag_x = x + anchor_w + hinge_w;
+    let h = tag_mm + 12.0;
+    let total_w = anchor_w + hinge_w + tag_mm + 8.0;
+    let mut s = String::new();
+    s.push_str(&format!(
+        r#"<g>
+  <text x="{x}" y="{y}" font-size="5px" font-weight="700">C7 side-facing flag template</text>
+  <text class="tiny" x="{x}" y="{}">Cut outside. Tape ANCHOR over C7. Fold on dashed line so tag face points toward side camera.</text>
+  <rect x="{x}" y="{}" width="{total_w}" height="{h}" fill="none" stroke="black" stroke-width="0.2"/>
+  <rect x="{x}" y="{}" width="{anchor_w}" height="{h}" fill="none" stroke="black" stroke-width="0.15"/>
+  <text class="tiny" x="{}" y="{}">ANCHOR</text>
+  <text class="tiny" x="{}" y="{}">over C7</text>
+  <line x1="{}" y1="{}" x2="{}" y2="{}" stroke="black" stroke-width="0.25" stroke-dasharray="1 1"/>
+  <text class="tiny" x="{}" y="{}" transform="rotate(-90 {} {})">FOLD</text>
+"#,
+        y + 6.0,
+        y + 10.0,
+        y + 10.0,
+        x + 5.0,
+        y + 23.0,
+        x + 5.0,
+        y + 28.0,
+        x + anchor_w,
+        y + 10.0,
+        x + anchor_w,
+        y + 10.0 + h,
+        x + anchor_w + 1.5,
+        y + 31.0,
+        x + anchor_w + 1.5,
+        y + 31.0
+    ));
+    s.push_str(&tag_svg(C7_ID, tag_x, y + 16.0, tag_mm)?);
+    s.push_str(&format!(
+        r#"
+  <rect x="{tag_x}" y="{}" width="{tag_mm}" height="{tag_mm}" fill="none" stroke="black" stroke-width="0.15" stroke-dasharray="1 1"/>
+  <text class="tiny" x="{tag_x}" y="{}">faces camera</text>
+</g>
+"#,
+        y + 16.0,
+        y + tag_mm + 21.0
+    ));
+    Ok(s)
 }
 
 fn tag_svg(id: usize, x: f32, y: f32, size_mm: f32) -> Result<String> {
@@ -1573,13 +1631,20 @@ fn estimate_placement_from_detections(detections: &[DetectionPoint]) -> Placemen
         .iter()
         .map(|det| (det.id, det.center))
         .collect::<BTreeMap<_, _>>();
-    let missing_required = [EAR_ID, C7_ID, SHOULDER_ID]
+    let missing_required_ids = [EAR_ID, C7_ID, SHOULDER_ID]
         .into_iter()
         .filter(|id| !landmarks.contains_key(id))
-        .map(tag_short_label)
         .collect::<Vec<_>>();
-    if !missing_required.is_empty() {
-        return PlacementEstimate::missing(format!("needs {}", missing_required.join(" ")));
+    if !missing_required_ids.is_empty() {
+        let missing_required = missing_required_ids
+            .iter()
+            .copied()
+            .map(tag_short_label)
+            .collect::<Vec<_>>();
+        return PlacementEstimate::missing_with_action(
+            missing_required_action(&missing_required_ids),
+            format!("needs {}", missing_required.join(" ")),
+        );
     }
 
     let ear = landmarks[&EAR_ID];
@@ -1614,6 +1679,13 @@ fn estimate_placement_from_detections(detections: &[DetectionPoint]) -> Placemen
     let score = (100_i32 - issues.len() as i32 * 35).clamp(0, 70) as u8;
     let action = placement_action_for_issues(&issues);
     PlacementEstimate::check(score, action, issues.join("; "))
+}
+
+fn missing_required_action(missing_required_ids: &[usize]) -> &'static str {
+    if missing_required_ids.len() == 1 && missing_required_ids[0] == C7_ID {
+        return "Aim C7 flag";
+    }
+    "Place missing tags"
 }
 
 fn placement_action_for_issues(issues: &[String]) -> &'static str {
@@ -2904,6 +2976,27 @@ mod tests {
         assert_eq!(estimate.status, PlacementStatus::Check);
         assert_eq!(estimate.action, "Move ear tag up");
         assert!(estimate.detail.contains("ear not above C7"));
+    }
+
+    #[test]
+    fn placement_estimator_points_to_c7_flag_when_only_c7_is_missing() {
+        let detections = vec![
+            test_detection(EAR_ID, 247.0, 1186.0),
+            test_detection(SHOULDER_ID, 243.0, 1262.0),
+            test_detection(HIP_ID, 424.0, 1260.0),
+        ];
+        let estimate = estimate_placement_from_detections(&detections);
+        assert_eq!(estimate.status, PlacementStatus::Missing);
+        assert_eq!(estimate.action, "Aim C7 flag");
+        assert_eq!(estimate.detail, "needs C7");
+    }
+
+    #[test]
+    fn placement_estimator_uses_generic_message_when_all_required_tags_are_missing() {
+        let estimate = estimate_placement_from_detections(&[]);
+        assert_eq!(estimate.status, PlacementStatus::Missing);
+        assert_eq!(estimate.action, "Place missing tags");
+        assert_eq!(estimate.detail, "needs ear C7 shoulder");
     }
 
     #[test]
