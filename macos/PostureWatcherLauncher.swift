@@ -247,11 +247,25 @@ final class PostureWatcherLauncher: NSObject, NSApplicationDelegate, AVCaptureVi
         previewView.heightAnchor.constraint(equalToConstant: 485).isActive = true
         root.addArrangedSubview(previewView)
 
+        let buttonRow = NSStackView()
+        buttonRow.orientation = .horizontal
+        buttonRow.alignment = .centerY
+        buttonRow.spacing = 8
+        buttonRow.translatesAutoresizingMaskIntoConstraints = false
+
+        let debugButton = NSButton(title: "Open Debug", target: self, action: #selector(openDebugFrame(_:)))
+        debugButton.bezelStyle = .rounded
+        debugButton.translatesAutoresizingMaskIntoConstraints = false
+        debugButton.widthAnchor.constraint(equalToConstant: 101).isActive = true
+
         let stickerButton = NSButton(title: "Open Tags", target: self, action: #selector(openStickerSheet(_:)))
         stickerButton.bezelStyle = .rounded
         stickerButton.translatesAutoresizingMaskIntoConstraints = false
-        stickerButton.widthAnchor.constraint(equalToConstant: 210).isActive = true
-        root.addArrangedSubview(stickerButton)
+        stickerButton.widthAnchor.constraint(equalToConstant: 101).isActive = true
+
+        buttonRow.addArrangedSubview(debugButton)
+        buttonRow.addArrangedSubview(stickerButton)
+        root.addArrangedSubview(buttonRow)
 
         let content = NSView()
         content.addSubview(root)
@@ -315,6 +329,17 @@ final class PostureWatcherLauncher: NSObject, NSApplicationDelegate, AVCaptureVi
             log("opened sticker sheet: \(url.path)")
         } catch {
             log("sticker sheet open failed: \(error.localizedDescription)")
+            showMessage(error.localizedDescription)
+        }
+    }
+
+    @objc private func openDebugFrame(_ sender: NSButton) {
+        do {
+            let url = try debugFrameURL()
+            NSWorkspace.shared.open(url)
+            log("opened debug frame: \(url.path)")
+        } catch {
+            log("debug frame open failed: \(error.localizedDescription)")
             showMessage(error.localizedDescription)
         }
     }
@@ -527,6 +552,21 @@ final class PostureWatcherLauncher: NSObject, NSApplicationDelegate, AVCaptureVi
             throw AppError.message("Could not generate AprilTag sticker sheet.")
         }
         return outURL
+    }
+
+    private func debugFrameURL() throws -> URL {
+        let supportURL = try appSupportURL()
+        let tagDebugURL = supportURL
+            .appendingPathComponent("analysis", isDirectory: true)
+            .appendingPathComponent("latest-tags.png")
+        if FileManager.default.fileExists(atPath: tagDebugURL.path) {
+            return tagDebugURL
+        }
+        let frameURL = supportURL.appendingPathComponent("latest-frame.jpg")
+        if FileManager.default.fileExists(atPath: frameURL.path) {
+            return frameURL
+        }
+        throw AppError.message("No camera frame has been captured yet.")
     }
 
     private func postureWatcherBinaryPath() throws -> String {

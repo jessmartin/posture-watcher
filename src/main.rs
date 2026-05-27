@@ -614,6 +614,8 @@ fn analyze_frame_file(
     let img = image::open(input).with_context(|| format!("opening {}", input.display()))?;
     let img = apply_rotation(img, rotate);
     let detections = detect_tags(&img)?;
+    let tag_debug = out_dir.join("latest-tags.png");
+    write_tag_debug_image(&img, &detections, &tag_debug)?;
     emit_tag_status(&detections);
     if !has_required_posture_tags(&detections) {
         eprintln!("{}", missing_required_tags_message(&detections));
@@ -1210,6 +1212,28 @@ fn write_debug_image(
             (a.x as f32, a.y as f32),
             (b.x as f32, b.y as f32),
             Rgba([0, 255, 80, 255]),
+        );
+    }
+    canvas
+        .save(out)
+        .with_context(|| format!("writing {}", out.display()))?;
+    Ok(())
+}
+
+fn write_tag_debug_image(
+    img: &DynamicImage,
+    detections: &[DetectionPoint],
+    out: &Path,
+) -> Result<()> {
+    ensure_parent(out)?;
+    let mut canvas = img.to_rgba8();
+    for det in detections {
+        draw_tag_outline(&mut canvas, det);
+        let c = det.center;
+        draw_filled_rect_mut(
+            &mut canvas,
+            Rect::at(c.x.round() as i32 - 5, c.y.round() as i32 - 5).of_size(10, 10),
+            Rgba([255, 0, 0, 255]),
         );
     }
     canvas
