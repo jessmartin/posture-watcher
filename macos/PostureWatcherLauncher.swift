@@ -121,6 +121,7 @@ final class PostureWatcherLauncher: NSObject, NSApplicationDelegate, AVCaptureVi
     private var previewWindow: NSWindow?
     private let previewView = BadgerPreviewView()
     private var cameraPopup: NSPopUpButton?
+    private var badgerStatusLabel: NSTextField?
     private var selectedCameraName: String?
     private var analyzerOutputBuffer = ""
     private let session = AVCaptureSession()
@@ -182,6 +183,24 @@ final class PostureWatcherLauncher: NSObject, NSApplicationDelegate, AVCaptureVi
         cameraRow.addArrangedSubview(cameraLabel)
         cameraRow.addArrangedSubview(popup)
         root.addArrangedSubview(cameraRow)
+
+        let badgerRow = NSStackView()
+        badgerRow.orientation = .horizontal
+        badgerRow.alignment = .centerY
+        badgerRow.spacing = 8
+        badgerRow.translatesAutoresizingMaskIntoConstraints = false
+
+        let badgerLabel = NSTextField(labelWithString: "Badger")
+        let statusLabel = NSTextField(labelWithString: "checking")
+        statusLabel.textColor = .secondaryLabelColor
+        statusLabel.alignment = .left
+        statusLabel.translatesAutoresizingMaskIntoConstraints = false
+        statusLabel.widthAnchor.constraint(equalToConstant: 175).isActive = true
+        badgerStatusLabel = statusLabel
+
+        badgerRow.addArrangedSubview(badgerLabel)
+        badgerRow.addArrangedSubview(statusLabel)
+        root.addArrangedSubview(badgerRow)
 
         previewView.translatesAutoresizingMaskIntoConstraints = false
         previewView.widthAnchor.constraint(equalToConstant: 210).isActive = true
@@ -428,9 +447,39 @@ final class PostureWatcherLauncher: NSObject, NSApplicationDelegate, AVCaptureVi
     }
 
     private func handleAnalyzerLine(_ line: String) {
-        guard line.hasPrefix("DISPLAY,") else { return }
-        DispatchQueue.main.async {
-            self.previewView.applyDisplayPayload(line)
+        if line.hasPrefix("DISPLAY,") {
+            DispatchQueue.main.async {
+                self.previewView.applyDisplayPayload(line)
+            }
+            return
+        }
+        if line.hasPrefix("BADGER,") {
+            DispatchQueue.main.async {
+                self.applyBadgerStatus(line)
+            }
+        }
+    }
+
+    private func applyBadgerStatus(_ line: String) {
+        let parts = line.split(separator: ",", omittingEmptySubsequences: false).map(String.init)
+        guard parts.count >= 2 else { return }
+        let status = parts[1]
+        switch status {
+        case "connected":
+            badgerStatusLabel?.stringValue = "connected"
+            badgerStatusLabel?.textColor = .systemGreen
+        case "disconnected":
+            badgerStatusLabel?.stringValue = "not connected"
+            badgerStatusLabel?.textColor = .systemRed
+        case "disabled":
+            badgerStatusLabel?.stringValue = "disabled"
+            badgerStatusLabel?.textColor = .secondaryLabelColor
+        case "checking":
+            badgerStatusLabel?.stringValue = "checking"
+            badgerStatusLabel?.textColor = .systemOrange
+        default:
+            badgerStatusLabel?.stringValue = status
+            badgerStatusLabel?.textColor = .secondaryLabelColor
         }
     }
 

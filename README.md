@@ -50,7 +50,7 @@ Launch it:
 open "target/macos/Posture Watcher.app"
 ```
 
-The app should prompt for Camera permission as `Posture Watcher`. It opens a small preview window that mirrors the Badger display, lets you choose the camera, captures frames natively, and runs the bundled Rust binary in `live-file` mode. Runtime outputs go under `~/Library/Application Support/Posture Watcher/`.
+The app should prompt for Camera permission as `Posture Watcher`. It opens a small preview window that mirrors the Badger display, shows Badger connection status, lets you choose the camera, captures frames natively, and runs the bundled Rust binary in `live-file` mode. Runtime outputs go under `~/Library/Application Support/Posture Watcher/`.
 
 Watch the app log:
 
@@ -93,7 +93,7 @@ On macOS, CLI tools like `imagesnap` can remain blocked even when the app bundle
 ## Quick Test
 
 ```sh
-cargo run -- stickers
+cargo run -- stickers --open
 cargo run -- annotate-samples
 cargo run -- run-samples --send-badger
 ```

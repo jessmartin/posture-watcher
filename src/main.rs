@@ -47,6 +47,8 @@ enum Commands {
         out: PathBuf,
         #[arg(long, default_value_t = 18.0)]
         tag_mm: f32,
+        #[arg(long)]
+        open: bool,
     },
     /// Add fake AprilTags to the sample images for repeatable test data.
     AnnotateSamples {
@@ -246,7 +248,13 @@ enum FrameAnalysisOutcome {
 fn main() -> Result<()> {
     let cli = Cli::parse();
     match cli.command {
-        Commands::Stickers { out, tag_mm } => generate_stickers(&out, tag_mm),
+        Commands::Stickers { out, tag_mm, open } => {
+            generate_stickers(&out, tag_mm)?;
+            if open {
+                open_file(&out)?;
+            }
+            Ok(())
+        }
         Commands::AnnotateSamples {
             input_dir,
             out_dir,
@@ -517,6 +525,7 @@ fn live(
         "starting live capture from {camera}; press Ctrl-C to stop; interval={}s window={}s rotate={rotate:?}",
         interval_secs, window_secs
     );
+    emit_badger_startup_status(port, send_badger_enabled);
     loop {
         let capture = capture_frame(
             camera,
@@ -564,6 +573,7 @@ fn live_file(
         interval_secs,
         window_secs
     );
+    emit_badger_startup_status(port, send_badger_enabled);
 
     loop {
         if !input.exists() {
@@ -1199,6 +1209,7 @@ fn publish_posture(
     if send_badger_enabled {
         if let Err(err) = send_payload_to_badger(port_name, &line, "OK,P,") {
             eprintln!("Badger posture send failed: {err:#}");
+            emit_badger_status("disconnected", &format!("{err:#}"));
         }
     }
     Ok(())
@@ -1210,6 +1221,7 @@ fn publish_badger_message(port_name: &str, message: &str, send_badger_enabled: b
     if send_badger_enabled {
         if let Err(err) = send_payload_to_badger(port_name, &line, "OK,M") {
             eprintln!("Badger message send failed: {err:#}");
+            emit_badger_status("disconnected", &format!("{err:#}"));
         }
     }
     Ok(())
@@ -1233,11 +1245,28 @@ fn send_payload_to_badger(port_name: &str, line: &str, expected_reply_prefix: &s
         "Badger rejected payload: {reply}"
     );
     println!("sent to Badger: {} ({reply})", line.trim());
+    emit_badger_status("connected", &reply);
     Ok(())
 }
 
 fn emit_display_payload(line: &str) {
     println!("DISPLAY,{}", line.trim());
+}
+
+fn emit_badger_startup_status(port_name: &str, send_badger_enabled: bool) {
+    if !send_badger_enabled {
+        emit_badger_status("disabled", "");
+        return;
+    }
+    emit_badger_status("checking", "");
+    match ping_badger(port_name) {
+        Ok(reply) => emit_badger_status("connected", &reply),
+        Err(err) => emit_badger_status("disconnected", &format!("{err:#}")),
+    }
+}
+
+fn emit_badger_status(status: &str, detail: &str) {
+    println!("BADGER,{status},{}", clean_payload_text(detail));
 }
 
 fn write_payload(port: &mut dyn SerialPort, line: &str) -> Result<()> {
@@ -1306,8 +1335,16 @@ fn badger_payload(posture: &PostureFrame) -> String {
 }
 
 fn badger_message_payload(message: &str) -> String {
-    let clean = message.replace([',', '\n', '\r'], " ");
-    format!("M,{}\n", clean.trim())
+    format!("M,{}\n", clean_payload_text(message))
+}
+
+fn clean_payload_text(message: &str) -> String {
+    message
+        .replace([',', '\n', '\r'], " ")
+        .trim()
+        .chars()
+        .take(80)
+        .collect()
 }
 
 fn print_posture(path: &Path, posture: &PostureFrame) {
@@ -1537,6 +1574,22 @@ fn ensure_parent(path: &Path) -> Result<()> {
         fs::create_dir_all(parent).with_context(|| format!("creating {}", parent.display()))?;
     }
     Ok(())
+}
+
+fn open_file(path: &Path) -> Result<()> {
+    #[cfg(target_os = "macos")]
+    {
+        run_cmd(
+            Command::new("open").arg(path),
+            "opening generated sticker sheet",
+        )?;
+        return Ok(());
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = path;
+        bail!("--open is only implemented on macOS")
+    }
 }
 
 fn xml_escape(text: &str) -> String {

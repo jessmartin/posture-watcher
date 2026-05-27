@@ -8,14 +8,16 @@ CONTENTS="$APP_DIR/Contents"
 MACOS="$CONTENTS/MacOS"
 RESOURCES="$CONTENTS/Resources"
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
+SWIFT_MODULE_CACHE="$ROOT_DIR/target/swift-module-cache"
 
 cd "$ROOT_DIR"
 cargo build
 
 rm -rf "$APP_DIR"
-mkdir -p "$MACOS" "$RESOURCES"
+mkdir -p "$MACOS" "$RESOURCES" "$SWIFT_MODULE_CACHE"
 
 swiftc macos/PostureWatcherLauncher.swift \
+  -module-cache-path "$SWIFT_MODULE_CACHE" \
   -framework AppKit \
   -framework AVFoundation \
   -o "$MACOS/PostureWatcherLauncher"
