@@ -1,0 +1,110 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="920" height="720" viewBox="0 0 920 720" role="img" aria-labelledby="title desc">
+  <title id="title">Posture Watcher marker placement guide</title>
+  <desc id="desc">Side-view diagram showing AprilTag placement on the tragus, C7, acromion, and hip or pelvis marker on the camera-facing side of the body.</desc>
+  <rect width="920" height="720" fill="#f7f4ef"/>
+  <rect x="36" y="36" width="848" height="648" rx="18" fill="#fffdf8" stroke="#222" stroke-width="3"/>
+
+  <g font-family="-apple-system, BlinkMacSystemFont, Segoe UI, sans-serif">
+    <text x="70" y="94" font-size="34" font-weight="700" fill="#111">Place all four tags on the camera-facing side</text>
+    <text x="70" y="132" font-size="20" fill="#444">The app needs a clean side view. Keep hair, loose collars, and shirt fabric away from the tag faces.</text>
+  </g>
+
+  <g transform="translate(145 142)">
+    <!-- Body silhouette -->
+    <path d="M270 64
+             C235 66 211 91 210 124
+             C209 158 232 182 262 188
+             C266 211 268 228 267 248
+             C254 256 242 270 236 292
+             C222 345 218 410 222 535
+             L364 535
+             C371 427 371 348 355 293
+             C348 270 334 256 316 248
+             C315 229 317 211 323 188
+             C354 181 375 157 374 126
+             C373 91 347 65 312 64
+             Z"
+          fill="#d6d0c6" stroke="#27251f" stroke-width="4"/>
+    <path d="M255 185 C239 222 239 259 252 301" fill="none" stroke="#8c8376" stroke-width="4"/>
+    <path d="M324 188 C339 225 339 260 326 301" fill="none" stroke="#8c8376" stroke-width="4"/>
+    <path d="M238 306 C270 330 319 331 352 307" fill="none" stroke="#8c8376" stroke-width="4"/>
+    <path d="M249 414 C282 433 318 433 350 414" fill="none" stroke="#8c8376" stroke-width="4"/>
+
+    <!-- Ear / tragus -->
+    <g>
+      <circle cx="205" cy="129" r="18" fill="#f2c14e" stroke="#111" stroke-width="4"/>
+      <rect x="192" y="116" width="26" height="26" rx="3" fill="#fff" stroke="#111" stroke-width="2"/>
+      <rect x="196" y="120" width="7" height="7" fill="#111"/>
+      <rect x="207" y="120" width="7" height="7" fill="#111"/>
+      <rect x="196" y="131" width="7" height="7" fill="#111"/>
+      <rect x="207" y="131" width="7" height="7" fill="#111"/>
+    </g>
+
+    <!-- C7 -->
+    <g>
+      <circle cx="330" cy="225" r="18" fill="#ef6f6c" stroke="#111" stroke-width="4"/>
+      <rect x="317" y="212" width="26" height="26" rx="3" fill="#fff" stroke="#111" stroke-width="2"/>
+      <rect x="321" y="216" width="7" height="7" fill="#111"/>
+      <rect x="332" y="216" width="7" height="7" fill="#111"/>
+      <rect x="321" y="227" width="7" height="7" fill="#111"/>
+    </g>
+
+    <!-- Shoulder / acromion -->
+    <g>
+      <circle cx="244" cy="300" r="18" fill="#62b6cb" stroke="#111" stroke-width="4"/>
+      <rect x="231" y="287" width="26" height="26" rx="3" fill="#fff" stroke="#111" stroke-width="2"/>
+      <rect x="235" y="291" width="7" height="7" fill="#111"/>
+      <rect x="246" y="302" width="7" height="7" fill="#111"/>
+      <rect x="235" y="302" width="7" height="7" fill="#111"/>
+    </g>
+
+    <!-- Hip / pelvis -->
+    <g>
+      <circle cx="334" cy="438" r="18" fill="#6bcf7f" stroke="#111" stroke-width="4"/>
+      <rect x="321" y="425" width="26" height="26" rx="3" fill="#fff" stroke="#111" stroke-width="2"/>
+      <rect x="325" y="429" width="7" height="7" fill="#111"/>
+      <rect x="336" y="429" width="7" height="7" fill="#111"/>
+      <rect x="336" y="440" width="7" height="7" fill="#111"/>
+    </g>
+
+    <!-- Callout lines -->
+    <g stroke="#111" stroke-width="3" fill="none">
+      <path d="M205 129 L76 120"/>
+      <path d="M330 225 L484 210"/>
+      <path d="M244 300 L74 318"/>
+      <path d="M334 438 L492 444"/>
+    </g>
+  </g>
+
+  <g font-family="-apple-system, BlinkMacSystemFont, Segoe UI, sans-serif">
+    <g transform="translate(56 242)">
+      <rect width="210" height="92" rx="10" fill="#fff7dc" stroke="#111" stroke-width="2"/>
+      <text x="16" y="30" font-size="22" font-weight="700" fill="#111">tag 0: ear</text>
+      <text x="16" y="60" font-size="17" fill="#333">Center over the tragus,</text>
+      <text x="16" y="81" font-size="17" fill="#333">not the jaw or cheek.</text>
+    </g>
+
+    <g transform="translate(550 318)">
+      <rect width="284" height="110" rx="10" fill="#ffe6e6" stroke="#111" stroke-width="2"/>
+      <text x="16" y="30" font-size="22" font-weight="700" fill="#111">tag 1: C7 flag</text>
+      <text x="16" y="60" font-size="17" fill="#333">Anchor at the lower-neck</text>
+      <text x="16" y="81" font-size="17" fill="#333">bump, but turn the tag face</text>
+      <text x="16" y="102" font-size="17" fill="#333">sideways toward the camera.</text>
+    </g>
+
+    <g transform="translate(56 430)">
+      <rect width="248" height="96" rx="10" fill="#e4f5fb" stroke="#111" stroke-width="2"/>
+      <text x="16" y="30" font-size="22" font-weight="700" fill="#111">tag 2: shoulder</text>
+      <text x="16" y="60" font-size="17" fill="#333">Use the acromion: the</text>
+      <text x="16" y="81" font-size="17" fill="#333">bony roof of the shoulder.</text>
+    </g>
+
+    <g transform="translate(550 520)">
+      <rect width="286" height="108" rx="10" fill="#e1f8e4" stroke="#111" stroke-width="2"/>
+      <text x="16" y="30" font-size="22" font-weight="700" fill="#111">tag 3: hip / pelvis</text>
+      <text x="16" y="60" font-size="17" fill="#333">Prefer a belt clip or tight</text>
+      <text x="16" y="81" font-size="17" fill="#333">layer near the side hip, not</text>
+      <text x="16" y="102" font-size="17" fill="#333">a loose shirt hem.</text>
+    </g>
+  </g>
+</svg>

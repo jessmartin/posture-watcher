@@ -77,7 +77,7 @@ macOS should prompt for Camera permission as `Posture Watcher`. The app is the p
 2. Put the tags on:
 
    - `tag36h11-0`: ear / tragus region
-   - `tag36h11-1`: C7
+   - `tag36h11-1`: C7, mounted on a small side-facing tab/flag
    - `tag36h11-2`: shoulder / acromion
    - `tag36h11-3`: hip / belt marker, optional but useful for sitting/standing
 
@@ -96,6 +96,64 @@ macOS should prompt for Camera permission as `Posture Watcher`. The app is the p
    ```
 
 Each saved sample includes the raw frame, debug images, and a `*-tags.txt` report with marker coordinates, detected mode, placement score, and posture measurements.
+
+## Marker Placement Guide
+
+Place every marker on the camera-facing side of your body. The system is a side-view tracker; a beautifully placed sticker on the far side of the body is invisible to the camera.
+
+<p align="center">
+  <img src="docs/screenshots/marker-placement-guide.svg" width="680" alt="Side-view guide for placing ear, C7, shoulder, and hip AprilTags">
+</p>
+
+The goal is repeatable landmark tracking, not a medical diagnosis. If you can, have a physical therapist or clinician mark C7 and the shoulder landmark once, then take a reference photo so you can repeat the placement later.
+
+### `tag36h11-0`: Ear / Tragus
+
+Put this tag on the side of the face at the tragus region: the small cartilage bump immediately in front of the ear canal. Center the tag near that bump rather than on the cheek, jawline, hair, or earlobe.
+
+Keep hair, glasses arms, headphones, and mask straps from covering the tag. If a skin sticker is annoying, a repeatable small ear-hook, glasses-arm tab, or medical-tape tab can work, but it should land in the same tragus-area position each session.
+
+### `tag36h11-1`: C7
+
+C7 is the prominent bump at the base of the neck. A practical way to find it:
+
+1. Gently bend your head forward and feel for the most prominent lower-neck bump.
+2. Gently extend your neck; the C7 bump tends to stay prominent while the segment above it moves more.
+3. Put the tag centered over that bump, on skin or a tight collar/undershirt that does not slide.
+
+With the camera at your side, do not stick this AprilTag flat to the back of your neck. A flat C7 sticker points backward, so the side camera sees the edge of the paper instead of the tag face. Use one of these instead:
+
+- Best: a small tape tab or folded cardstock flag anchored over C7, with the printed tag face turned toward the camera.
+- Good: a tight collar/undershirt mount at C7 with a small side-facing flap.
+- Poor: a flat sticker on the back of the neck or a loose shirt collar.
+
+The anchor point should still be C7, but the readable AprilTag face must be visible to the side camera. If the C7 tag moves with fabric instead of the neck, the app may produce confident-looking but wrong feedback.
+
+### `tag36h11-2`: Shoulder / Acromion
+
+Use the acromion: the bony roof at the outside/top of the shoulder. You can usually find it by tracing the collarbone outward until you reach the flat bony shelf at the shoulder tip.
+
+Put the tag over that bony point, facing the camera. Avoid the upper arm muscle and avoid loose sleeve fabric; both shift more than the landmark the app is trying to track.
+
+### `tag36h11-3`: Hip / Pelvis
+
+This tag is mainly for sitting-vs-standing detection and torso context. Prefer a stable pelvis/side-hip reference over a shirt marker:
+
+- Best repeatability: a belt clip or waistband tab on the camera-facing side, roughly aligned with the side hip / greater trochanter area.
+- Good: tape on tight shorts, leggings, or a tucked-in tight base layer.
+- Poor: a tag on a loose shirt hem, because it can drift independently of your pelvis.
+
+If the hip tag is hard to place, leave the Mode picker on `Sitting` or `Standing` while saving calibration samples. Auto mode needs the hip tag to be trustworthy.
+
+### Daily Placement Check
+
+Before trusting the curve, look for this sequence in the app:
+
+1. `Tags ready`: all required tags are visible.
+2. `Placement good`: the tag geometry is plausible.
+3. `Detected Sitting` or `Detected Standing`: mode detection agrees with your actual desk mode, or you have selected the mode manually.
+
+If the app says `Move ear tag up`, `Recheck ear and C7`, `Move shoulder tag down`, or `Move closer`, treat that as a setup problem. Fix the stickers before saving calibration samples or responding to the Badger curve.
 
 ## Safety Rails
 
@@ -281,5 +339,7 @@ open "target/macos/Posture Watcher.app"
 This project uses photogrammetry-style marker tracking, not medical diagnosis. The calibration approach is based on a few practical constraints from the literature:
 
 - Craniovertebral angle can be measured reliably from photographs when marker placement and camera setup are controlled: [systematic review on non-radiographic forward-head posture measurement](https://pubmed.ncbi.nlm.nih.gov/35935117/) and [CVA sitting/standing discussion](https://pmc.ncbi.nlm.nih.gov/articles/PMC11042887/).
+- The ear/C7 placement follows common CVA photogrammetry practice: markers on the tragus region and C7 spinous process, with lateral photos from a fixed side view: [CVA reliability study](https://pmc.ncbi.nlm.nih.gov/articles/PMC12777732/) and [radiography vs. photogrammetry comparison](https://pubmed.ncbi.nlm.nih.gov/38610914/).
+- The shoulder/hip landmarks are support markers for body-axis context, based on sagittal posture work that commonly uses the acromion and greater trochanter: [sagittal posture guidelines](https://www.mdpi.com/2813-0545/4/2/5).
 - Marker placement consistency matters; photogrammetry studies often use calibration/training to align marker methods before measuring posture: [photogrammetry reliability study](https://pmc.ncbi.nlm.nih.gov/articles/PMC11957747/).
 - Ergonomics guidance still emphasizes changing positions and avoiding long static postures, even with a well-set workstation: [Mayo Clinic office ergonomics guide](https://www.mayoclinic.org/health/office-ergonomics/MY01460).
