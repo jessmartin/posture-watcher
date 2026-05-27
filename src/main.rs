@@ -614,6 +614,7 @@ fn analyze_frame_file(
     let img = image::open(input).with_context(|| format!("opening {}", input.display()))?;
     let img = apply_rotation(img, rotate);
     let detections = detect_tags(&img)?;
+    emit_tag_status(&detections);
     if !has_required_posture_tags(&detections) {
         eprintln!("{}", missing_required_tags_message(&detections));
         missing_person.record_missing(no_person_after, port, send_badger_enabled)?;
@@ -652,6 +653,43 @@ fn missing_required_tags_message(detections: &[DetectionPoint]) -> String {
     format!(
         "need at least ear(tag {EAR_ID}), C7(tag {C7_ID}), and shoulder(tag {SHOULDER_ID}); found ids {ids:?}"
     )
+}
+
+fn emit_tag_status(detections: &[DetectionPoint]) {
+    let mut ids = detections.iter().map(|det| det.id).collect::<Vec<_>>();
+    ids.sort_unstable();
+    ids.dedup();
+
+    let present = [EAR_ID, C7_ID, SHOULDER_ID, HIP_ID]
+        .into_iter()
+        .filter(|id| ids.contains(id))
+        .map(tag_short_label)
+        .collect::<Vec<_>>();
+    let missing_required = [EAR_ID, C7_ID, SHOULDER_ID]
+        .into_iter()
+        .filter(|id| !ids.contains(id))
+        .map(tag_short_label)
+        .collect::<Vec<_>>();
+    let status = if missing_required.is_empty() {
+        "ready"
+    } else {
+        "missing"
+    };
+    println!(
+        "TAGS,{status},{},{}",
+        clean_payload_text(&present.join(" ")),
+        clean_payload_text(&missing_required.join(" "))
+    );
+}
+
+fn tag_short_label(id: usize) -> &'static str {
+    match id {
+        EAR_ID => "ear",
+        C7_ID => "C7",
+        SHOULDER_ID => "shoulder",
+        HIP_ID => "hip",
+        _ => "unknown",
+    }
 }
 
 fn list_cameras() -> Result<()> {

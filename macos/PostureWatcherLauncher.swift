@@ -122,6 +122,7 @@ final class PostureWatcherLauncher: NSObject, NSApplicationDelegate, AVCaptureVi
     private let previewView = BadgerPreviewView()
     private var cameraPopup: NSPopUpButton?
     private var badgerStatusLabel: NSTextField?
+    private var tagStatusLabel: NSTextField?
     private var selectedCameraName: String?
     private var analyzerOutputBuffer = ""
     private let session = AVCaptureSession()
@@ -152,7 +153,7 @@ final class PostureWatcherLauncher: NSObject, NSApplicationDelegate, AVCaptureVi
 
     private func setupPreviewWindow() {
         let window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 260, height: 610),
+            contentRect: NSRect(x: 0, y: 0, width: 260, height: 640),
             styleMask: [.titled, .closable, .miniaturizable],
             backing: .buffered,
             defer: false
@@ -201,6 +202,24 @@ final class PostureWatcherLauncher: NSObject, NSApplicationDelegate, AVCaptureVi
         badgerRow.addArrangedSubview(badgerLabel)
         badgerRow.addArrangedSubview(statusLabel)
         root.addArrangedSubview(badgerRow)
+
+        let tagRow = NSStackView()
+        tagRow.orientation = .horizontal
+        tagRow.alignment = .centerY
+        tagRow.spacing = 8
+        tagRow.translatesAutoresizingMaskIntoConstraints = false
+
+        let tagLabel = NSTextField(labelWithString: "Tags")
+        let tagStatus = NSTextField(labelWithString: "waiting")
+        tagStatus.textColor = .secondaryLabelColor
+        tagStatus.alignment = .left
+        tagStatus.translatesAutoresizingMaskIntoConstraints = false
+        tagStatus.widthAnchor.constraint(equalToConstant: 175).isActive = true
+        tagStatusLabel = tagStatus
+
+        tagRow.addArrangedSubview(tagLabel)
+        tagRow.addArrangedSubview(tagStatus)
+        root.addArrangedSubview(tagRow)
 
         previewView.translatesAutoresizingMaskIntoConstraints = false
         previewView.widthAnchor.constraint(equalToConstant: 210).isActive = true
@@ -457,6 +476,12 @@ final class PostureWatcherLauncher: NSObject, NSApplicationDelegate, AVCaptureVi
             DispatchQueue.main.async {
                 self.applyBadgerStatus(line)
             }
+            return
+        }
+        if line.hasPrefix("TAGS,") {
+            DispatchQueue.main.async {
+                self.applyTagStatus(line)
+            }
         }
     }
 
@@ -480,6 +505,29 @@ final class PostureWatcherLauncher: NSObject, NSApplicationDelegate, AVCaptureVi
         default:
             badgerStatusLabel?.stringValue = status
             badgerStatusLabel?.textColor = .secondaryLabelColor
+        }
+    }
+
+    private func applyTagStatus(_ line: String) {
+        let parts = line.split(separator: ",", omittingEmptySubsequences: false).map(String.init)
+        guard parts.count >= 4 else { return }
+        let status = parts[1]
+        let present = parts[2]
+        let missing = parts[3]
+        switch status {
+        case "ready":
+            tagStatusLabel?.stringValue = present.isEmpty ? "ready" : "ready: \(present)"
+            tagStatusLabel?.textColor = .systemGreen
+        case "missing":
+            if present.isEmpty {
+                tagStatusLabel?.stringValue = "none seen"
+            } else {
+                tagStatusLabel?.stringValue = "missing \(missing)"
+            }
+            tagStatusLabel?.textColor = .systemOrange
+        default:
+            tagStatusLabel?.stringValue = status
+            tagStatusLabel?.textColor = .secondaryLabelColor
         }
     }
 
