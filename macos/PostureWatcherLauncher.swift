@@ -125,6 +125,7 @@ final class PostureWatcherLauncher: NSObject, NSApplicationDelegate, AVCaptureVi
     private var autoModeLabel: NSTextField?
     private var badgerStatusLabel: NSTextField?
     private var tagStatusLabel: NSTextField?
+    private var placementStatusLabel: NSTextField?
     private var selectedCameraName: String?
     private var analyzerOutputBuffer = ""
     private let session = AVCaptureSession()
@@ -155,7 +156,7 @@ final class PostureWatcherLauncher: NSObject, NSApplicationDelegate, AVCaptureVi
 
     private func setupPreviewWindow() {
         let window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 260, height: 785),
+            contentRect: NSRect(x: 0, y: 0, width: 260, height: 820),
             styleMask: [.titled, .closable, .miniaturizable],
             backing: .buffered,
             defer: false
@@ -260,6 +261,24 @@ final class PostureWatcherLauncher: NSObject, NSApplicationDelegate, AVCaptureVi
         tagRow.addArrangedSubview(tagLabel)
         tagRow.addArrangedSubview(tagStatus)
         root.addArrangedSubview(tagRow)
+
+        let placementRow = NSStackView()
+        placementRow.orientation = .horizontal
+        placementRow.alignment = .centerY
+        placementRow.spacing = 8
+        placementRow.translatesAutoresizingMaskIntoConstraints = false
+
+        let placementLabel = NSTextField(labelWithString: "Placement")
+        let placementStatus = NSTextField(labelWithString: "waiting")
+        placementStatus.textColor = .secondaryLabelColor
+        placementStatus.alignment = .left
+        placementStatus.translatesAutoresizingMaskIntoConstraints = false
+        placementStatus.widthAnchor.constraint(equalToConstant: 145).isActive = true
+        placementStatusLabel = placementStatus
+
+        placementRow.addArrangedSubview(placementLabel)
+        placementRow.addArrangedSubview(placementStatus)
+        root.addArrangedSubview(placementRow)
 
         previewView.translatesAutoresizingMaskIntoConstraints = false
         previewView.widthAnchor.constraint(equalToConstant: 210).isActive = true
@@ -408,6 +427,8 @@ final class PostureWatcherLauncher: NSObject, NSApplicationDelegate, AVCaptureVi
         tagStatusLabel?.textColor = .systemRed
         autoModeLabel?.stringValue = "unknown"
         autoModeLabel?.textColor = .secondaryLabelColor
+        placementStatusLabel?.stringValue = "camera blocked"
+        placementStatusLabel?.textColor = .systemRed
         previewView.applyDisplayPayload("DISPLAY,M,Camera access needed")
         showMessage(text)
     }
@@ -727,6 +748,12 @@ final class PostureWatcherLauncher: NSObject, NSApplicationDelegate, AVCaptureVi
             DispatchQueue.main.async {
                 self.applyModeStatus(line)
             }
+            return
+        }
+        if line.hasPrefix("PLACEMENT,") {
+            DispatchQueue.main.async {
+                self.applyPlacementStatus(line)
+            }
         }
     }
 
@@ -775,6 +802,30 @@ final class PostureWatcherLauncher: NSObject, NSApplicationDelegate, AVCaptureVi
             autoModeLabel?.textColor = .secondaryLabelColor
         }
         autoModeLabel?.toolTip = detail.isEmpty ? nil : detail
+    }
+
+    private func applyPlacementStatus(_ line: String) {
+        let parts = line.split(separator: ",", omittingEmptySubsequences: false).map(String.init)
+        guard parts.count >= 3 else { return }
+        let status = parts[1]
+        let score = parts[2]
+        let detail = parts.dropFirst(3).joined(separator: ",")
+
+        switch status {
+        case "good":
+            placementStatusLabel?.stringValue = "good \(score)%"
+            placementStatusLabel?.textColor = .systemGreen
+        case "check":
+            placementStatusLabel?.stringValue = "check \(score)%"
+            placementStatusLabel?.textColor = .systemOrange
+        case "missing":
+            placementStatusLabel?.stringValue = "missing"
+            placementStatusLabel?.textColor = .systemOrange
+        default:
+            placementStatusLabel?.stringValue = status
+            placementStatusLabel?.textColor = .secondaryLabelColor
+        }
+        placementStatusLabel?.toolTip = detail.isEmpty ? nil : detail
     }
 
     private func applyTagStatus(_ line: String) {

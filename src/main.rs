@@ -26,6 +26,7 @@ const BADGER_PROTOCOL: &str = "POSTURE_WATCHER_BADGER_V2";
 const DEFAULT_LIVE_INTERVAL_SECS: u64 = 5;
 const DEFAULT_NO_PERSON_AFTER_SECS: u64 = 30;
 const NO_PERSON_MESSAGE: &str = "No person found";
+const CHECK_MARKERS_MESSAGE: &str = "Check markers";
 
 const EAR_ID: usize = 0;
 const C7_ID: usize = 1;
@@ -229,6 +230,52 @@ impl DetectedDeskMode {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PlacementStatus {
+    Good,
+    Check,
+    Missing,
+}
+
+impl PlacementStatus {
+    fn label(self) -> &'static str {
+        match self {
+            Self::Good => "good",
+            Self::Check => "check",
+            Self::Missing => "missing",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct PlacementEstimate {
+    status: PlacementStatus,
+    score: u8,
+    detail: String,
+}
+
+impl PlacementEstimate {
+    fn new(status: PlacementStatus, score: u8, detail: impl Into<String>) -> Self {
+        Self {
+            status,
+            score,
+            detail: detail.into(),
+        }
+    }
+
+    fn good(detail: impl Into<String>) -> Self {
+        Self::new(PlacementStatus::Good, 100, detail)
+    }
+
+    fn missing(detail: impl Into<String>) -> Self {
+        Self::new(PlacementStatus::Missing, 0, detail)
+    }
+
+    fn is_good(&self) -> bool {
+        self.status == PlacementStatus::Good
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct ModeEstimate {
     mode: DetectedDeskMode,
@@ -294,6 +341,7 @@ struct MissingPersonState {
 enum FrameAnalysisOutcome {
     Posture,
     MissingRequiredTags,
+    InvalidPlacement,
 }
 
 fn main() -> Result<()> {
@@ -543,6 +591,8 @@ fn snapshot_frame(
     println!("wrote {}", tag_debug.display());
     emit_tag_status(&detections);
     emit_mode_status(&estimate_mode_from_detections(&detections));
+    let placement = estimate_placement_from_detections(&detections);
+    emit_placement_status(&placement);
 
     let report = out_dir.join("latest-tags.txt");
     if !has_required_posture_tags(&detections) {
@@ -560,7 +610,11 @@ fn snapshot_frame(
     write_debug_image(&img, &detections, &posture, &analysis)?;
     println!("wrote {}", analysis.display());
     if send_badger_enabled {
-        send_to_badger(port, &posture)?;
+        if placement.is_good() {
+            send_to_badger(port, &posture)?;
+        } else {
+            send_badger_message(port, CHECK_MARKERS_MESSAGE)?;
+        }
     }
     Ok(())
 }
@@ -643,6 +697,7 @@ fn live(
         ) {
             Ok(FrameAnalysisOutcome::Posture) => {}
             Ok(FrameAnalysisOutcome::MissingRequiredTags) => {}
+            Ok(FrameAnalysisOutcome::InvalidPlacement) => {}
             Err(err) => {
                 eprintln!("{}: {err:#}", capture.display());
             }
@@ -691,6 +746,7 @@ fn live_file(
         ) {
             Ok(FrameAnalysisOutcome::Posture) => {}
             Ok(FrameAnalysisOutcome::MissingRequiredTags) => {}
+            Ok(FrameAnalysisOutcome::InvalidPlacement) => {}
             Err(err) => eprintln!("{}: {err:#}", input.display()),
         }
 
@@ -715,6 +771,8 @@ fn analyze_frame_file(
     write_tag_debug_image(&img, &detections, &tag_debug)?;
     emit_tag_status(&detections);
     emit_mode_status(&estimate_mode_from_detections(&detections));
+    let placement = estimate_placement_from_detections(&detections);
+    emit_placement_status(&placement);
     if !has_required_posture_tags(&detections) {
         let report = out_dir.join("latest-tags.txt");
         write_tag_report(input, &img, &detections, None, &report)?;
@@ -726,6 +784,13 @@ fn analyze_frame_file(
     let report = out_dir.join("latest-tags.txt");
     write_tag_report(input, &img, &detections, Some(&posture), &report)?;
     missing_person.clear();
+    if !placement.is_good() {
+        print_posture(input, &posture);
+        let debug = out_dir.join("latest-analysis.png");
+        write_debug_image(&img, &detections, &posture, &debug)?;
+        publish_badger_message(port, CHECK_MARKERS_MESSAGE, send_badger_enabled)?;
+        return Ok(FrameAnalysisOutcome::InvalidPlacement);
+    }
     window.push(posture);
     let avg = window.average().context("rolling average is empty")?;
     print_posture(input, &avg);
@@ -1250,6 +1315,66 @@ fn estimate_mode_from_landmarks(landmarks: &BTreeMap<usize, Point>) -> ModeEstim
     ModeEstimate::new(DetectedDeskMode::Unknown, 35, detail)
 }
 
+fn estimate_placement_from_detections(detections: &[DetectionPoint]) -> PlacementEstimate {
+    let landmarks = detections
+        .iter()
+        .map(|det| (det.id, det.center))
+        .collect::<BTreeMap<_, _>>();
+    let missing_required = [EAR_ID, C7_ID, SHOULDER_ID]
+        .into_iter()
+        .filter(|id| !landmarks.contains_key(id))
+        .map(tag_short_label)
+        .collect::<Vec<_>>();
+    if !missing_required.is_empty() {
+        return PlacementEstimate::missing(format!("needs {}", missing_required.join(" ")));
+    }
+
+    let ear = landmarks[&EAR_ID];
+    let c7 = landmarks[&C7_ID];
+    let shoulder = landmarks[&SHOULDER_ID];
+    let tag_edge = average_tag_edge_px(detections).unwrap_or(24.0).max(1.0);
+    let mut issues = Vec::new();
+
+    if tag_edge < 16.0 {
+        issues.push("tags too small".to_string());
+    }
+
+    let ear_above_c7 = c7.y - ear.y;
+    if ear_above_c7 < tag_edge * 0.5 {
+        issues.push("ear not above C7".to_string());
+    }
+
+    let cva = cva_degrees(ear, c7);
+    if !(15.0..=80.0).contains(&cva) {
+        issues.push(format!("ear-C7 angle implausible {cva:.0}deg"));
+    }
+
+    let shoulder_below_c7 = shoulder.y - c7.y;
+    if shoulder_below_c7 < -tag_edge {
+        issues.push("shoulder above C7".to_string());
+    }
+
+    if issues.is_empty() {
+        return PlacementEstimate::good(format!("cva={cva:.0}deg"));
+    }
+
+    let score = (100_i32 - issues.len() as i32 * 35).clamp(0, 70) as u8;
+    PlacementEstimate::new(PlacementStatus::Check, score, issues.join("; "))
+}
+
+fn average_tag_edge_px(detections: &[DetectionPoint]) -> Option<f64> {
+    if detections.is_empty() {
+        return None;
+    }
+    Some(detections.iter().map(tag_edge_px).sum::<f64>() / detections.len() as f64)
+}
+
+fn cva_degrees(ear: Point, c7: Point) -> f64 {
+    let vertical = (c7.y - ear.y).abs();
+    let horizontal = (ear.x - c7.x).abs().max(1.0);
+    vertical.atan2(horizontal).to_degrees()
+}
+
 fn posture_from_detections(detections: &[DetectionPoint]) -> Result<PostureFrame> {
     let mut landmarks = BTreeMap::new();
     for det in detections {
@@ -1268,7 +1393,7 @@ fn posture_from_detections(detections: &[DetectionPoint]) -> Result<PostureFrame
     let ear = ear.unwrap();
     let c7 = c7.unwrap();
     let shoulder = shoulder.unwrap();
-    let cva_degrees = Some((-(ear.y - c7.y)).atan2(ear.x - c7.x).to_degrees().abs());
+    let cva_degrees = Some(cva_degrees(ear, c7));
     let head_forward_px = Some(ear.x - shoulder.x);
     Ok(PostureFrame {
         landmarks,
@@ -1430,6 +1555,10 @@ fn write_tag_report(
         mode_estimate.confidence
     ));
     lines.push(format!("detected_mode_detail={}", mode_estimate.detail));
+    let placement = estimate_placement_from_detections(detections);
+    lines.push(format!("placement_status={}", placement.status.label()));
+    lines.push(format!("placement_score={}", placement.score));
+    lines.push(format!("placement_detail={}", placement.detail));
 
     for det in detections {
         lines.push(format!("tag.{}.label={}", det.id, tag_short_label(det.id)));
@@ -1582,6 +1711,15 @@ fn emit_mode_status(estimate: &ModeEstimate) {
         "MODE,{},{},{}",
         estimate.mode.label(),
         estimate.confidence,
+        clean_payload_text(&estimate.detail)
+    );
+}
+
+fn emit_placement_status(estimate: &PlacementEstimate) {
+    println!(
+        "PLACEMENT,{},{},{}",
+        estimate.status.label(),
+        estimate.score,
         clean_payload_text(&estimate.detail)
     );
 }
@@ -2009,6 +2147,7 @@ mod tests {
         assert!(text.contains("present=ear C7 shoulder hip"));
         assert!(text.contains("hip_present=true"));
         assert!(text.contains("detected_mode=standing"));
+        assert!(text.contains("placement_status=good"));
         assert!(text.contains("tag.0.center_x=20.0"));
         assert!(text.contains("posture.cva_degrees="));
         Ok(())
@@ -2035,15 +2174,36 @@ mod tests {
         );
     }
 
+    #[test]
+    fn placement_estimator_flags_implausible_ear_c7_geometry() {
+        let detections = vec![
+            test_detection(EAR_ID, 247.0, 1186.0),
+            test_detection(C7_ID, 429.0, 1187.0),
+            test_detection(SHOULDER_ID, 243.0, 1262.0),
+            test_detection(HIP_ID, 424.0, 1260.0),
+        ];
+        let estimate = estimate_placement_from_detections(&detections);
+        assert_eq!(estimate.status, PlacementStatus::Check);
+        assert!(estimate.detail.contains("ear not above C7"));
+    }
+
+    #[test]
+    fn cva_degrees_is_acute_for_left_or_right_facing_profile() {
+        let right_facing = cva_degrees(Point::new(80.0, 40.0), Point::new(40.0, 90.0));
+        let left_facing = cva_degrees(Point::new(40.0, 40.0), Point::new(80.0, 90.0));
+        assert!((right_facing - left_facing).abs() < 0.1);
+        assert!((right_facing - 51.3).abs() < 0.5);
+    }
+
     fn test_detection(id: usize, x: f64, y: f64) -> DetectionPoint {
         DetectionPoint {
             id,
             center: Point::new(x, y),
             corners: [
-                [x - 5.0, y - 5.0],
-                [x + 5.0, y - 5.0],
-                [x + 5.0, y + 5.0],
-                [x - 5.0, y + 5.0],
+                [x - 10.0, y - 10.0],
+                [x + 10.0, y - 10.0],
+                [x + 10.0, y + 10.0],
+                [x - 10.0, y + 10.0],
             ],
         }
     }
