@@ -825,6 +825,9 @@ fn snapshot_frame(
         write_tag_report(input, &img, &detections, None, &report)?;
         println!("wrote {}", report.display());
         eprintln!("{}", missing_required_tags_message(&detections));
+        if send_badger_enabled && !detections.is_empty() {
+            send_badger_message(port, placement.badger_message(), badger_orientation)?;
+        }
         return Ok(());
     }
 
@@ -1261,12 +1264,22 @@ fn analyze_frame_file(
         let report = out_dir.join("latest-tags.txt");
         write_tag_report(&input, &img, &detections, None, &report)?;
         eprintln!("{}", missing_required_tags_message(&detections));
-        missing_person.record_missing(
-            no_person_after,
-            port,
-            send_badger_enabled,
-            badger_orientation,
-        )?;
+        if detections.is_empty() {
+            missing_person.record_missing(
+                no_person_after,
+                port,
+                send_badger_enabled,
+                badger_orientation,
+            )?;
+        } else {
+            missing_person.clear();
+            publish_badger_message(
+                port,
+                placement.badger_message(),
+                badger_orientation,
+                send_badger_enabled,
+            )?;
+        }
         return Ok(FrameAnalysisOutcome::MissingRequiredTags);
     }
     let posture = posture_from_detections(&detections)?;
