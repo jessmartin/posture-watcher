@@ -17,7 +17,7 @@ use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::thread;
-use std::time::{Duration, Instant, SystemTime};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use walkdir::WalkDir;
 
 const BADGER_WIDTH: i32 = 296;
@@ -190,6 +190,15 @@ enum Commands {
         #[arg(long, default_value = "No person found")]
         message: String,
     },
+    /// Build sitting/standing posture baselines from saved good samples.
+    CalibrateBaseline {
+        #[arg(long)]
+        samples_dir: Option<PathBuf>,
+        #[arg(long)]
+        out: Option<PathBuf>,
+        #[arg(long, default_value_t = 3)]
+        min_samples: usize,
+    },
 }
 
 #[derive(Debug, Clone, ValueEnum)]
@@ -251,28 +260,47 @@ impl PlacementStatus {
 struct PlacementEstimate {
     status: PlacementStatus,
     score: u8,
+    action: String,
     detail: String,
 }
 
 impl PlacementEstimate {
-    fn new(status: PlacementStatus, score: u8, detail: impl Into<String>) -> Self {
+    fn new(
+        status: PlacementStatus,
+        score: u8,
+        action: impl Into<String>,
+        detail: impl Into<String>,
+    ) -> Self {
         Self {
             status,
             score,
+            action: action.into(),
             detail: detail.into(),
         }
     }
 
     fn good(detail: impl Into<String>) -> Self {
-        Self::new(PlacementStatus::Good, 100, detail)
+        Self::new(PlacementStatus::Good, 100, "Ready", detail)
+    }
+
+    fn check(score: u8, action: impl Into<String>, detail: impl Into<String>) -> Self {
+        Self::new(PlacementStatus::Check, score, action, detail)
     }
 
     fn missing(detail: impl Into<String>) -> Self {
-        Self::new(PlacementStatus::Missing, 0, detail)
+        Self::new(PlacementStatus::Missing, 0, "Place missing tags", detail)
     }
 
     fn is_good(&self) -> bool {
         self.status == PlacementStatus::Good
+    }
+
+    fn badger_message(&self) -> &str {
+        if self.action.is_empty() {
+            CHECK_MARKERS_MESSAGE
+        } else {
+            &self.action
+        }
     }
 }
 
@@ -469,6 +497,11 @@ fn main() -> Result<()> {
         Commands::RestoreBadger { port, backup } => restore_badger(&port, backup.as_deref()),
         Commands::SendDemo { port, pose } => send_demo(&port, pose),
         Commands::SendStatus { port, message } => send_badger_message(&port, &message),
+        Commands::CalibrateBaseline {
+            samples_dir,
+            out,
+            min_samples,
+        } => calibrate_baseline(samples_dir.as_deref(), out.as_deref(), min_samples),
     }
 }
 
@@ -613,7 +646,7 @@ fn snapshot_frame(
         if placement.is_good() {
             send_to_badger(port, &posture)?;
         } else {
-            send_badger_message(port, CHECK_MARKERS_MESSAGE)?;
+            send_badger_message(port, placement.badger_message())?;
         }
     }
     Ok(())
@@ -788,7 +821,7 @@ fn analyze_frame_file(
         print_posture(input, &posture);
         let debug = out_dir.join("latest-analysis.png");
         write_debug_image(&img, &detections, &posture, &debug)?;
-        publish_badger_message(port, CHECK_MARKERS_MESSAGE, send_badger_enabled)?;
+        publish_badger_message(port, placement.badger_message(), send_badger_enabled)?;
         return Ok(FrameAnalysisOutcome::InvalidPlacement);
     }
     window.push(posture);
@@ -1359,7 +1392,27 @@ fn estimate_placement_from_detections(detections: &[DetectionPoint]) -> Placemen
     }
 
     let score = (100_i32 - issues.len() as i32 * 35).clamp(0, 70) as u8;
-    PlacementEstimate::new(PlacementStatus::Check, score, issues.join("; "))
+    let action = placement_action_for_issues(&issues);
+    PlacementEstimate::check(score, action, issues.join("; "))
+}
+
+fn placement_action_for_issues(issues: &[String]) -> &'static str {
+    if issues.iter().any(|issue| issue == "ear not above C7") {
+        return "Move ear tag up";
+    }
+    if issues
+        .iter()
+        .any(|issue| issue.starts_with("ear-C7 angle implausible"))
+    {
+        return "Recheck ear and C7";
+    }
+    if issues.iter().any(|issue| issue == "shoulder above C7") {
+        return "Move shoulder tag down";
+    }
+    if issues.iter().any(|issue| issue == "tags too small") {
+        return "Move closer";
+    }
+    CHECK_MARKERS_MESSAGE
 }
 
 fn average_tag_edge_px(detections: &[DetectionPoint]) -> Option<f64> {
@@ -1558,6 +1611,7 @@ fn write_tag_report(
     let placement = estimate_placement_from_detections(detections);
     lines.push(format!("placement_status={}", placement.status.label()));
     lines.push(format!("placement_score={}", placement.score));
+    lines.push(format!("placement_action={}", placement.action));
     lines.push(format!("placement_detail={}", placement.detail));
 
     for det in detections {
@@ -1603,6 +1657,244 @@ fn write_tag_report(
     fs::write(out, lines.join("\n") + "\n")
         .with_context(|| format!("writing {}", out.display()))?;
     Ok(())
+}
+
+#[derive(Debug, Clone)]
+struct BaselineSample {
+    path: PathBuf,
+    cva_degrees: f64,
+    head_forward_px: f64,
+}
+
+#[derive(Debug, Clone)]
+struct BaselineSummary {
+    mode: DetectedDeskMode,
+    accepted: Vec<BaselineSample>,
+    ignored: usize,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct SampleStats {
+    count: usize,
+    mean: f64,
+    stddev: f64,
+    min: f64,
+    max: f64,
+}
+
+fn calibrate_baseline(
+    samples_dir: Option<&Path>,
+    out: Option<&Path>,
+    min_samples: usize,
+) -> Result<()> {
+    ensure!(min_samples > 0, "--min-samples must be at least 1");
+    let samples_dir = match samples_dir {
+        Some(path) => path.to_path_buf(),
+        None => default_samples_dir()?,
+    };
+    let out = match out {
+        Some(path) => path.to_path_buf(),
+        None => default_calibration_path()?,
+    };
+    let text = build_calibration_baseline(&samples_dir, min_samples)?;
+    ensure_parent(&out)?;
+    fs::write(&out, &text).with_context(|| format!("writing {}", out.display()))?;
+    print!("{text}");
+    println!("wrote {}", out.display());
+    Ok(())
+}
+
+fn build_calibration_baseline(samples_dir: &Path, min_samples: usize) -> Result<String> {
+    ensure!(min_samples > 0, "min_samples must be at least 1");
+    let created_at = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or(Duration::ZERO)
+        .as_secs();
+    let mut lines = vec![
+        format!("created_at_unix={created_at}"),
+        format!("samples_dir={}", samples_dir.display()),
+        format!("min_samples_per_mode={min_samples}"),
+    ];
+
+    for mode in [DetectedDeskMode::Standing, DetectedDeskMode::Sitting] {
+        let summary = summarize_baseline_mode(samples_dir, mode)?;
+        append_baseline_summary(&mut lines, &summary, min_samples);
+    }
+
+    Ok(lines.join("\n") + "\n")
+}
+
+fn summarize_baseline_mode(samples_dir: &Path, mode: DetectedDeskMode) -> Result<BaselineSummary> {
+    let dir = samples_dir.join(mode.label());
+    let mut accepted = Vec::new();
+    let mut ignored = 0;
+
+    if !dir.exists() {
+        return Ok(BaselineSummary {
+            mode,
+            accepted,
+            ignored,
+        });
+    }
+
+    let mut reports = WalkDir::new(&dir)
+        .min_depth(1)
+        .max_depth(1)
+        .into_iter()
+        .filter_map(Result::ok)
+        .map(|entry| entry.into_path())
+        .filter(|path| {
+            path.file_name()
+                .and_then(OsStr::to_str)
+                .map(|name| name.ends_with("-tags.txt"))
+                .unwrap_or(false)
+        })
+        .collect::<Vec<_>>();
+    reports.sort();
+
+    for report in reports {
+        let values = parse_key_value_file(&report)?;
+        if values.get("status").map(String::as_str) != Some("ready")
+            || values.get("placement_status").map(String::as_str) != Some("good")
+        {
+            ignored += 1;
+            continue;
+        }
+
+        let Some(cva_degrees) = parse_report_f64(&values, "posture.cva_degrees") else {
+            ignored += 1;
+            continue;
+        };
+        let Some(head_forward_px) = parse_report_f64(&values, "posture.head_forward_px") else {
+            ignored += 1;
+            continue;
+        };
+
+        accepted.push(BaselineSample {
+            path: report,
+            cva_degrees,
+            head_forward_px,
+        });
+    }
+
+    Ok(BaselineSummary {
+        mode,
+        accepted,
+        ignored,
+    })
+}
+
+fn append_baseline_summary(lines: &mut Vec<String>, summary: &BaselineSummary, min_samples: usize) {
+    let label = summary.mode.label();
+    let status = if summary.accepted.len() >= min_samples {
+        "ready"
+    } else {
+        "needs_more_samples"
+    };
+    lines.push(format!("mode.{label}.status={status}"));
+    lines.push(format!("mode.{label}.accepted={}", summary.accepted.len()));
+    lines.push(format!("mode.{label}.ignored={}", summary.ignored));
+
+    let cva = summary
+        .accepted
+        .iter()
+        .map(|sample| sample.cva_degrees)
+        .collect::<Vec<_>>();
+    append_stats(
+        lines,
+        &format!("mode.{label}.cva_degrees"),
+        sample_stats(&cva),
+    );
+
+    let head_forward = summary
+        .accepted
+        .iter()
+        .map(|sample| sample.head_forward_px)
+        .collect::<Vec<_>>();
+    append_stats(
+        lines,
+        &format!("mode.{label}.head_forward_px"),
+        sample_stats(&head_forward),
+    );
+
+    for (idx, sample) in summary.accepted.iter().enumerate() {
+        lines.push(format!(
+            "mode.{label}.sample.{}={}",
+            idx + 1,
+            sample.path.display()
+        ));
+    }
+}
+
+fn append_stats(lines: &mut Vec<String>, prefix: &str, stats: Option<SampleStats>) {
+    match stats {
+        Some(stats) => {
+            lines.push(format!("{prefix}.count={}", stats.count));
+            lines.push(format!("{prefix}.mean={:.2}", stats.mean));
+            lines.push(format!("{prefix}.stddev={:.2}", stats.stddev));
+            lines.push(format!("{prefix}.min={:.2}", stats.min));
+            lines.push(format!("{prefix}.max={:.2}", stats.max));
+        }
+        None => {
+            lines.push(format!("{prefix}.count=0"));
+        }
+    }
+}
+
+fn sample_stats(values: &[f64]) -> Option<SampleStats> {
+    let count = values.len();
+    if count == 0 {
+        return None;
+    }
+    let mean = values.iter().sum::<f64>() / count as f64;
+    let variance = values
+        .iter()
+        .map(|value| {
+            let delta = value - mean;
+            delta * delta
+        })
+        .sum::<f64>()
+        / count as f64;
+    let min = values.iter().copied().fold(f64::INFINITY, f64::min);
+    let max = values.iter().copied().fold(f64::NEG_INFINITY, f64::max);
+    Some(SampleStats {
+        count,
+        mean,
+        stddev: variance.sqrt(),
+        min,
+        max,
+    })
+}
+
+fn parse_key_value_file(path: &Path) -> Result<BTreeMap<String, String>> {
+    let text = fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
+    Ok(text
+        .lines()
+        .filter_map(|line| line.split_once('='))
+        .map(|(key, value)| (key.trim().to_string(), value.trim().to_string()))
+        .collect())
+}
+
+fn parse_report_f64(values: &BTreeMap<String, String>, key: &str) -> Option<f64> {
+    values.get(key)?.parse().ok()
+}
+
+fn default_samples_dir() -> Result<PathBuf> {
+    Ok(default_app_support_dir()?.join("samples"))
+}
+
+fn default_calibration_path() -> Result<PathBuf> {
+    Ok(default_app_support_dir()?
+        .join("calibration")
+        .join("baseline.txt"))
+}
+
+fn default_app_support_dir() -> Result<PathBuf> {
+    let home = std::env::var_os("HOME").context("HOME is not set")?;
+    Ok(PathBuf::from(home)
+        .join("Library")
+        .join("Application Support")
+        .join("Posture Watcher"))
 }
 
 fn tag_edge_px(det: &DetectionPoint) -> f64 {
@@ -1717,9 +2009,10 @@ fn emit_mode_status(estimate: &ModeEstimate) {
 
 fn emit_placement_status(estimate: &PlacementEstimate) {
     println!(
-        "PLACEMENT,{},{},{}",
+        "PLACEMENT,{},{},{},{}",
         estimate.status.label(),
         estimate.score,
+        clean_payload_text(&estimate.action),
         clean_payload_text(&estimate.detail)
     );
 }
@@ -2148,6 +2441,7 @@ mod tests {
         assert!(text.contains("hip_present=true"));
         assert!(text.contains("detected_mode=standing"));
         assert!(text.contains("placement_status=good"));
+        assert!(text.contains("placement_action=Ready"));
         assert!(text.contains("tag.0.center_x=20.0"));
         assert!(text.contains("posture.cva_degrees="));
         Ok(())
@@ -2184,6 +2478,7 @@ mod tests {
         ];
         let estimate = estimate_placement_from_detections(&detections);
         assert_eq!(estimate.status, PlacementStatus::Check);
+        assert_eq!(estimate.action, "Move ear tag up");
         assert!(estimate.detail.contains("ear not above C7"));
     }
 
@@ -2193,6 +2488,32 @@ mod tests {
         let left_facing = cva_degrees(Point::new(40.0, 40.0), Point::new(80.0, 90.0));
         assert!((right_facing - left_facing).abs() < 0.1);
         assert!((right_facing - 51.3).abs() < 0.5);
+    }
+
+    #[test]
+    fn calibration_baseline_uses_only_good_samples() -> Result<()> {
+        let nanos = SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos();
+        let root = std::env::temp_dir().join(format!(
+            "posture-watcher-baseline-{}-{nanos}",
+            std::process::id()
+        ));
+        let samples = root.join("samples");
+        let sitting = samples.join("sitting");
+        write_sample_report(&sitting.join("001-tags.txt"), "good", 49.0, 12.0)?;
+        write_sample_report(&sitting.join("002-tags.txt"), "good", 50.0, 14.0)?;
+        write_sample_report(&sitting.join("003-tags.txt"), "good", 51.0, 16.0)?;
+        write_sample_report(&sitting.join("004-tags.txt"), "check", 88.0, 99.0)?;
+
+        let text = build_calibration_baseline(&samples, 3)?;
+        assert!(text.contains("mode.sitting.status=ready"));
+        assert!(text.contains("mode.sitting.accepted=3"));
+        assert!(text.contains("mode.sitting.ignored=1"));
+        assert!(text.contains("mode.sitting.cva_degrees.mean=50.00"));
+        assert!(text.contains("mode.sitting.head_forward_px.mean=14.00"));
+        assert!(text.contains("mode.standing.status=needs_more_samples"));
+
+        let _ = fs::remove_dir_all(root);
+        Ok(())
     }
 
     fn test_detection(id: usize, x: f64, y: f64) -> DetectionPoint {
@@ -2206,5 +2527,21 @@ mod tests {
                 [x - 10.0, y + 10.0],
             ],
         }
+    }
+
+    fn write_sample_report(
+        path: &Path,
+        placement_status: &str,
+        cva_degrees: f64,
+        head_forward_px: f64,
+    ) -> Result<()> {
+        ensure_parent(path)?;
+        fs::write(
+            path,
+            format!(
+                "status=ready\nplacement_status={placement_status}\nposture.cva_degrees={cva_degrees}\nposture.head_forward_px={head_forward_px}\n"
+            ),
+        )?;
+        Ok(())
     }
 }

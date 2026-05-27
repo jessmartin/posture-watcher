@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="520" height="780" viewBox="0 0 520 780" role="img" aria-labelledby="title desc">
   <title id="title">Posture Watcher macOS app showing marker placement warning</title>
-  <desc id="desc">A stylized screenshot of the Posture Watcher app with Badger connected, tags visible, placement check, and a Check markers display.</desc>
+  <desc id="desc">A stylized screenshot of the Posture Watcher app with Badger connected, tags visible, an actionable placement warning, and a Move ear tag up display.</desc>
   <rect width="520" height="780" rx="28" fill="#242724"/>
   <rect x="18" y="18" width="484" height="744" rx="20" fill="#2f322f"/>
   <circle cx="54" cy="50" r="12" fill="#ff5f57"/>
@@ -27,12 +27,12 @@
     <text x="178" y="324" fill="#6fe28b" font-weight="700">ready: ear C7 shoulder hip</text>
 
     <text x="50" y="376" fill="#e8e8e8">Placement</text>
-    <text x="178" y="376" fill="#ffbd4a" font-weight="700">check 30%</text>
+    <text x="178" y="376" fill="#ffbd4a" font-weight="700">Move ear tag up</text>
   </g>
 
   <rect x="50" y="410" width="420" height="250" fill="#fff"/>
   <rect x="50" y="410" width="420" height="250" fill="none" stroke="#111" stroke-width="2"/>
-  <text x="260" y="540" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, Segoe UI, sans-serif" font-size="30" font-weight="700" fill="#111">Check markers</text>
+  <text x="260" y="540" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, Segoe UI, sans-serif" font-size="30" font-weight="700" fill="#111">Move ear tag up</text>
 
   <rect x="50" y="690" width="195" height="44" rx="8" fill="#6a6f6a"/>
   <text x="147" y="719" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, Segoe UI, sans-serif" font-size="19" font-weight="700" fill="#f5f5f5">Open Debug</text>

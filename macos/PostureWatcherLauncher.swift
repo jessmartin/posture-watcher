@@ -809,17 +809,18 @@ final class PostureWatcherLauncher: NSObject, NSApplicationDelegate, AVCaptureVi
         guard parts.count >= 3 else { return }
         let status = parts[1]
         let score = parts[2]
-        let detail = parts.dropFirst(3).joined(separator: ",")
+        let action = parts.count >= 4 ? parts[3] : ""
+        let detail = parts.dropFirst(4).joined(separator: ",")
 
         switch status {
         case "good":
             placementStatusLabel?.stringValue = "good \(score)%"
             placementStatusLabel?.textColor = .systemGreen
         case "check":
-            placementStatusLabel?.stringValue = "check \(score)%"
+            placementStatusLabel?.stringValue = action.isEmpty ? "check \(score)%" : action
             placementStatusLabel?.textColor = .systemOrange
         case "missing":
-            placementStatusLabel?.stringValue = "missing"
+            placementStatusLabel?.stringValue = action.isEmpty ? "missing" : action
             placementStatusLabel?.textColor = .systemOrange
         default:
             placementStatusLabel?.stringValue = status

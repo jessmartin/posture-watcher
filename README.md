@@ -10,7 +10,7 @@ Posture Watcher is a small end-to-end posture feedback loop:
 The goal is not to nag on every frame. The app samples slowly, averages over a rolling window, and refuses to show a posture curve when the markers are visible but anatomically implausible.
 
 <p align="center">
-  <img src="docs/screenshots/posture-watcher-check-markers.svg" width="340" alt="Posture Watcher app showing placement check and Check markers warning">
+  <img src="docs/screenshots/posture-watcher-check-markers.svg" width="340" alt="Posture Watcher app showing an actionable marker placement warning">
 </p>
 
 ## Current State
@@ -20,8 +20,8 @@ The live loop is working with the plugged-in Logitech C930e and Badger2040:
 - The macOS app captures frames through AVFoundation.
 - The Rust analyzer detects AprilTags and writes debug images/reports.
 - The Badger receiver ACKs messages over USB serial.
-- The app distinguishes `Tags ready` from `Placement check`.
-- When marker geometry is implausible, the Badger shows `Check markers` instead of a misleading curve.
+- The app distinguishes `Tags ready` from marker placement quality.
+- When marker geometry is implausible, the Badger shows a short fix like `Move ear tag up` instead of a misleading curve.
 
 The remaining calibration work is physical: place the tags on the actual landmarks, collect sitting and standing samples, then tune the sitting/standing and placement heuristics against those examples.
 
@@ -86,7 +86,7 @@ macOS should prompt for Camera permission as `Posture Watcher`. The app is the p
    - `Badger connected` means the e-ink receiver is ACKing payloads.
    - `Tags ready` means the required tags are visible.
    - `Placement good` means the marker geometry is plausible enough to show a curve.
-   - `Placement check` means the tags are visible but probably wrong.
+   - A placement action like `Move ear tag up` means the tags are visible but probably wrong.
 
 4. Use `Save Sample` whenever you have a useful sitting, standing, good, or bad setup. Samples are saved under:
 
@@ -106,13 +106,71 @@ If tags are missing for long enough, the Badger says:
 No person found
 ```
 
-If tags are visible but the geometry is implausible, the Badger says:
+If tags are visible but the geometry is implausible, the Badger gives a short correction:
 
 ```text
-Check markers
+Move ear tag up
 ```
 
-That prevents the e-ink display from encouraging posture changes based on bad marker placement. Current placement checks include things like whether the ear marker is actually above C7 and whether the ear-to-C7 angle is geometrically plausible.
+That prevents the e-ink display from encouraging posture changes based on bad marker placement. Current placement checks include things like whether the ear marker is actually above C7 and whether the ear-to-C7 angle is geometrically plausible. The fallback message is `Check markers` when the analyzer cannot choose a more specific action.
+
+## Calibration
+
+Calibration has three layers: camera geometry, marker placement, and your own baseline posture. Do them in that order.
+
+### 1. Camera Geometry
+
+Keep the camera boring and repeatable:
+
+- Use the same camera, desk position, and side-view angle each day.
+- Keep the C930e sideways and use `--rotate ccw90`.
+- Frame the body so ear, C7, shoulder, and hip can all be visible without being tiny.
+- Do not move the camera between sitting and standing if you want the app to compare those modes later.
+
+This is why the macOS app owns capture and why the debug report saves image size and marker centers. The posture math is only meaningful if the camera setup is stable.
+
+### 2. Marker Placement
+
+Start by making the app say `Tags ready`, then make it say `Placement good`.
+
+The current placement checks are deliberately simple. They are there to catch setup mistakes like an ear marker that is not above C7, tags that are too small in the frame, or an ear/C7 angle that is geometrically implausible. If the app says `Move ear tag up`, fix the sticker before trusting the curve.
+
+The first useful calibration photo tomorrow is not a heroic posture photo. It is a boring side-view setup photo where the tags are clearly on the intended landmarks.
+
+### 3. Personal Baseline
+
+Do not calibrate against a universal "perfect posture" shape. Calibrate against your own repeatable, comfortable, clinician-approved working positions:
+
+1. Choose `Standing` in the Mode picker.
+2. Set up in your normal standing-desk position.
+3. Wait until `Placement good`.
+4. Hit `Save Sample` three times over a minute.
+5. Repeat the same process in `Sitting` mode.
+
+Those saved samples become the reference set for your personal baseline. Once you have a few good samples in each mode, build the baseline file:
+
+```sh
+cargo run -- calibrate-baseline
+```
+
+That command averages only `placement_status=good` reports and writes:
+
+```text
+~/Library/Application Support/Posture Watcher/calibration/baseline.txt
+```
+
+Use that file for future tuning: the live curve should drift from your own sitting and standing baselines rather than judging every frame against a generic spine curve.
+
+### What To Tune Later
+
+Once you have good sitting and standing samples, tune these separately:
+
+- Mode detection: shoulder-to-hip geometry and absolute marker positions.
+- Head/neck trend: craniovertebral angle from tragus/ear to C7.
+- Shoulder/torso trend: shoulder, C7, and hip relationship.
+- Feedback threshold: how far and how long you drift before the Badger should look "off."
+
+The important idea is trend feedback over time. The app should help you notice sustained drift, not force you into a rigid pose.
 
 ## Sitting vs Standing
 
@@ -124,6 +182,7 @@ Keep using the Mode picker as the ground-truth label while saving samples. The s
 detected_mode=sitting
 detected_mode_confidence=95
 placement_status=check
+placement_action=Move ear tag up
 placement_detail=ear not above C7; ear-C7 angle implausible 1deg
 ```
 
@@ -206,3 +265,11 @@ POSTURE_WATCHER_NO_PERSON_AFTER_SECS=30 \
 POSTURE_WATCHER_ROTATE=ccw90 \
 open "target/macos/Posture Watcher.app"
 ```
+
+## Research Notes
+
+This project uses photogrammetry-style marker tracking, not medical diagnosis. The calibration approach is based on a few practical constraints from the literature:
+
+- Craniovertebral angle can be measured reliably from photographs when marker placement and camera setup are controlled: [systematic review on non-radiographic forward-head posture measurement](https://pubmed.ncbi.nlm.nih.gov/35935117/) and [CVA sitting/standing discussion](https://pmc.ncbi.nlm.nih.gov/articles/PMC11042887/).
+- Marker placement consistency matters; photogrammetry studies often use calibration/training to align marker methods before measuring posture: [photogrammetry reliability study](https://pmc.ncbi.nlm.nih.gov/articles/PMC11957747/).
+- Ergonomics guidance still emphasizes changing positions and avoiding long static postures, even with a well-set workstation: [Mayo Clinic office ergonomics guide](https://www.mayoclinic.org/health/office-ergonomics/MY01460).
