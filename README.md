@@ -10,7 +10,7 @@ Posture Watcher is a small end-to-end posture feedback loop:
 The goal is not to nag on every frame. The app samples slowly, averages over a rolling window, and refuses to show a posture curve when the markers are visible but anatomically implausible.
 
 <p align="center">
-  <img src="docs/screenshots/posture-watcher-check-markers.svg" width="340" alt="Posture Watcher app showing an actionable marker placement warning">
+  <img src="docs/screenshots/live-posture-line.jpg" width="420" alt="Live posture debug image with AprilTags and the superimposed posture line">
 </p>
 
 ## Current State
@@ -18,7 +18,7 @@ The goal is not to nag on every frame. The app samples slowly, averages over a r
 The live loop is working with the plugged-in Logitech C930e and Badger2040:
 
 - The macOS app captures frames through AVFoundation.
-- The Rust analyzer detects AprilTags and writes debug images/reports.
+- The Rust analyzer inspects a short burst of recent frames, detects AprilTags, fuses the strongest observations, and writes debug images/reports.
 - The Badger receiver ACKs messages over USB serial.
 - The app distinguishes `Tags ready` from marker placement quality.
 - When marker geometry is implausible, the Badger shows a short fix like `Move ear tag up` instead of a misleading curve.
@@ -27,11 +27,31 @@ The remaining calibration work is physical: place the tags on the actual landmar
 
 ## Gallery
 
+| Live debug overlay | macOS app tracking |
+| --- | --- |
+| <img src="docs/screenshots/live-posture-line.jpg" width="360" alt="Live posture debug image with AprilTags and the superimposed posture line"> | <img src="docs/screenshots/posture-watcher-app-live.png" width="240" alt="Posture Watcher macOS app showing ready tags, good placement, and the mirrored Badger curve"> |
+
 | Badger in action | Wearing the tags |
 | --- | --- |
-| <img src="docs/screenshots/badger-photo-placeholder.svg" width="320" alt="Placeholder for Badger in action photo"> | <img src="docs/screenshots/apriltag-wearing-placeholder.svg" width="320" alt="Placeholder for photo of wearing AprilTags"> |
+| <img src="docs/screenshots/badger-in-use.jpg" width="320" alt="Badger2040 mounted under the monitor showing the posture curve"> | <img src="docs/screenshots/apriltag-wearing-placeholder.svg" width="320" alt="Placeholder for photo of wearing AprilTags"> |
 
-The two placeholder images above are intentional. Drop in real photos after the next physical test.
+The wearing-tags placeholder is intentional. Drop in a real photo after the next physical test.
+
+## How I'm Using It
+
+The Badger sits in portrait orientation just below the monitor, close enough to glance at without turning the setup into another dashboard. The macOS app stays open on the computer as the debugging view, while the e-ink display shows the low-friction posture trace.
+
+<p align="center">
+  <img src="docs/screenshots/badger-in-use.jpg" width="560" alt="Badger2040 mounted below the monitor with the macOS app and live camera debug view visible">
+</p>
+
+## How I Built It
+
+The camera is mounted to the side for a clean profile view. A printed AprilTag sheet provides the daily markers, and the Badger plugs in over USB-C so the Rust analyzer can push the same curve to the desk display.
+
+<p align="center">
+  <img src="docs/screenshots/desk-setup.jpg" width="680" alt="Desk setup with side camera, printed AprilTag sheet, and Badger2040 connected over USB-C">
+</p>
 
 ## Hardware
 
@@ -101,6 +121,25 @@ macOS should prompt for Camera permission as `Posture Watcher`. The app is the p
 
 Each saved sample includes the raw frame, debug images, and a `*-tags.txt` report with marker coordinates, detected mode, placement score, and posture measurements.
 
+## Burst Sampling
+
+The macOS app writes a rolling burst of camera frames in addition to `latest-frame.jpg`. The Rust analyzer still publishes posture on the slower app interval, but each update is based on the best/fused AprilTag observations from the recent burst. This helps when one frame is blurred, grainy, or catches a tag at a bad angle.
+
+Defaults:
+
+- `POSTURE_WATCHER_INTERVAL_SECS=5`: how often the Badger/posture state updates.
+- `POSTURE_WATCHER_BURST_FRAMES=8`: how many recent frames the analyzer inspects per update.
+- `POSTURE_WATCHER_BURST_FRAME_INTERVAL_SECS=0.25`: how often the macOS capture loop writes burst frames.
+
+The CLI equivalent is:
+
+```sh
+cargo run -- live-file \
+  --input "$HOME/Library/Application Support/Posture Watcher/latest-frame.jpg" \
+  --burst-dir "$HOME/Library/Application Support/Posture Watcher/burst" \
+  --burst-frames 8
+```
+
 ## Marker Placement Guide
 
 Place every marker on the camera-facing side of your body. The system is a side-view tracker; a beautifully placed sticker on the far side of the body is invisible to the camera.
@@ -139,7 +178,9 @@ Build the C7 flag like a tiny folded place card:
 2. Put the `ANCHOR` area directly over C7 using skin-safe medical tape or a tight base layer.
 3. Fold the tag panel on the dashed line so the tag face points toward the camera. If the camera is on your left, the tag face points left; if the camera is on your right, it points right.
 4. Stiffen the flag with a second layer of tape or thin cardstock so it does not curl.
-5. Keep the flag short. A long floppy tab will exaggerate neck motion and make the line look more precise than it is.
+5. Keep the flag as short as visibility allows. If it needs to stick out farther, make it stiff and keep the anchor directly over C7; a long floppy tab will exaggerate neck motion and make the line look more precise than it is.
+
+The app applies a C7 anchor correction for this flag setup. The C7 AprilTag face is not assumed to be the anatomical C7 point; the analyzer uses the tag orientation and shifts the C7 landmark back toward the ear-to-shoulder neck line. The macOS default is `0.75` tag widths and can be changed with `POSTURE_WATCHER_C7_ANCHOR_OFFSET_TAG_WIDTHS`.
 
 ### `tag36h11-2`: Shoulder / Acromion
 

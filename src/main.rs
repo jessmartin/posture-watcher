@@ -25,6 +25,7 @@ const BADGER_HEIGHT: i32 = 128;
 const BADGER_PROTOCOL: &str = "POSTURE_WATCHER_BADGER_V2";
 const DEFAULT_LIVE_INTERVAL_SECS: u64 = 5;
 const DEFAULT_NO_PERSON_AFTER_SECS: u64 = 30;
+const DEFAULT_BURST_FRAMES: usize = 8;
 const NO_PERSON_MESSAGE: &str = "No person found";
 const CHECK_MARKERS_MESSAGE: &str = "Check markers";
 
@@ -68,6 +69,8 @@ enum Commands {
         annotated_out: Option<PathBuf>,
         #[arg(long, value_enum, default_value_t = FrameRotation::None)]
         rotate: FrameRotation,
+        #[arg(long, default_value_t = 0.0)]
+        c7_anchor_offset_tag_widths: f64,
         #[arg(long)]
         send_badger: bool,
         #[arg(long, default_value = "/dev/cu.usbmodem83201")]
@@ -83,6 +86,8 @@ enum Commands {
         out_dir: PathBuf,
         #[arg(long, value_enum, default_value_t = FrameRotation::None)]
         rotate: FrameRotation,
+        #[arg(long, default_value_t = 0.0)]
+        c7_anchor_offset_tag_widths: f64,
         #[arg(long)]
         send_badger: bool,
         #[arg(long, default_value = "/dev/cu.usbmodem83201")]
@@ -98,6 +103,8 @@ enum Commands {
         out_dir: PathBuf,
         #[arg(long, value_enum, default_value_t = FrameRotation::None)]
         rotate: FrameRotation,
+        #[arg(long, default_value_t = 0.0)]
+        c7_anchor_offset_tag_widths: f64,
         #[arg(long)]
         send_badger: bool,
         #[arg(long, default_value = "/dev/cu.usbmodem83201")]
@@ -129,6 +136,8 @@ enum Commands {
         no_person_after_secs: u64,
         #[arg(long, value_enum, default_value_t = FrameRotation::Ccw90)]
         rotate: FrameRotation,
+        #[arg(long, default_value_t = 0.0)]
+        c7_anchor_offset_tag_widths: f64,
         #[arg(long, default_value = "artifacts/live")]
         out_dir: PathBuf,
         #[arg(long)]
@@ -144,6 +153,10 @@ enum Commands {
     LiveFile {
         #[arg(long)]
         input: PathBuf,
+        #[arg(long)]
+        burst_dir: Option<PathBuf>,
+        #[arg(long, default_value_t = DEFAULT_BURST_FRAMES)]
+        burst_frames: usize,
         #[arg(long, default_value = "/dev/cu.usbmodem83201")]
         port: String,
         #[arg(long, default_value_t = 120)]
@@ -154,6 +167,8 @@ enum Commands {
         no_person_after_secs: u64,
         #[arg(long, value_enum, default_value_t = FrameRotation::Ccw90)]
         rotate: FrameRotation,
+        #[arg(long, default_value_t = 0.0)]
+        c7_anchor_offset_tag_widths: f64,
         #[arg(long, default_value = "artifacts/live-file")]
         out_dir: PathBuf,
         #[arg(long)]
@@ -461,6 +476,7 @@ fn main() -> Result<()> {
             input,
             annotated_out,
             rotate,
+            c7_anchor_offset_tag_widths,
             send_badger,
             port,
             badger_orientation,
@@ -469,6 +485,7 @@ fn main() -> Result<()> {
                 image::open(&input).with_context(|| format!("opening {}", input.display()))?;
             let img = apply_rotation(img, rotate);
             let detections = detect_tags(&img)?;
+            let detections = apply_c7_anchor_correction(&detections, c7_anchor_offset_tag_widths);
             let posture = posture_from_detections(&detections)?;
             print_posture(&input, &posture, None);
             if let Some(out) = annotated_out {
@@ -484,6 +501,7 @@ fn main() -> Result<()> {
             input,
             out_dir,
             rotate,
+            c7_anchor_offset_tag_widths,
             send_badger,
             port,
             badger_orientation,
@@ -491,6 +509,7 @@ fn main() -> Result<()> {
             &input,
             &out_dir,
             rotate,
+            c7_anchor_offset_tag_widths,
             send_badger,
             &port,
             badger_orientation,
@@ -499,6 +518,7 @@ fn main() -> Result<()> {
             input_dir,
             out_dir,
             rotate,
+            c7_anchor_offset_tag_widths,
             send_badger,
             port,
             badger_orientation,
@@ -508,6 +528,7 @@ fn main() -> Result<()> {
             &input_dir,
             &out_dir,
             rotate,
+            c7_anchor_offset_tag_widths,
             send_badger,
             &port,
             badger_orientation,
@@ -524,6 +545,7 @@ fn main() -> Result<()> {
             interval_secs,
             no_person_after_secs,
             rotate,
+            c7_anchor_offset_tag_widths,
             out_dir,
             baseline,
             mode,
@@ -539,6 +561,7 @@ fn main() -> Result<()> {
             interval_secs,
             Duration::from_secs(no_person_after_secs),
             rotate,
+            c7_anchor_offset_tag_widths,
             &out_dir,
             baseline.as_deref(),
             mode,
@@ -547,11 +570,14 @@ fn main() -> Result<()> {
         ),
         Commands::LiveFile {
             input,
+            burst_dir,
+            burst_frames,
             port,
             window_secs,
             interval_secs,
             no_person_after_secs,
             rotate,
+            c7_anchor_offset_tag_widths,
             out_dir,
             baseline,
             mode,
@@ -560,11 +586,14 @@ fn main() -> Result<()> {
             once,
         } => live_file(
             &input,
+            burst_dir.as_deref(),
+            burst_frames,
             &port,
             window_secs,
             interval_secs,
             Duration::from_secs(no_person_after_secs),
             rotate,
+            c7_anchor_offset_tag_widths,
             &out_dir,
             baseline.as_deref(),
             mode,
@@ -772,6 +801,7 @@ fn snapshot_frame(
     input: &Path,
     out_dir: &Path,
     rotate: FrameRotation,
+    c7_anchor_offset_tag_widths: f64,
     send_badger_enabled: bool,
     port: &str,
     badger_orientation: BadgerOrientation,
@@ -780,6 +810,7 @@ fn snapshot_frame(
     let img = image::open(input).with_context(|| format!("opening {}", input.display()))?;
     let img = apply_rotation(img, rotate);
     let detections = detect_tags(&img)?;
+    let detections = apply_c7_anchor_correction(&detections, c7_anchor_offset_tag_widths);
 
     let tag_debug = out_dir.join("latest-tags.png");
     write_tag_debug_image(&img, &detections, &tag_debug)?;
@@ -818,6 +849,7 @@ fn run_samples(
     input_dir: &Path,
     out_dir: &Path,
     rotate: FrameRotation,
+    c7_anchor_offset_tag_widths: f64,
     send_badger_enabled: bool,
     port: &str,
     badger_orientation: BadgerOrientation,
@@ -834,6 +866,7 @@ fn run_samples(
         let img = image::open(&path).with_context(|| format!("opening {}", path.display()))?;
         let img = apply_rotation(img, rotate);
         let detections = detect_tags(&img)?;
+        let detections = apply_c7_anchor_correction(&detections, c7_anchor_offset_tag_widths);
         let posture = posture_from_detections(&detections)?;
         window.push(posture);
         let avg = window.average().context("rolling average is empty")?;
@@ -862,6 +895,7 @@ fn live(
     interval_secs: u64,
     no_person_after: Duration,
     rotate: FrameRotation,
+    c7_anchor_offset_tag_widths: f64,
     out_dir: &Path,
     baseline_path: Option<&Path>,
     mode_override: DeskModeOverride,
@@ -886,6 +920,8 @@ fn live(
         )?;
         match analyze_frame_file(
             &capture,
+            None,
+            1,
             out_dir,
             &mut windows,
             &mut missing_person,
@@ -893,6 +929,7 @@ fn live(
             port,
             no_person_after,
             rotate,
+            c7_anchor_offset_tag_widths,
             baseline_path,
             mode_override,
             badger_orientation,
@@ -910,11 +947,14 @@ fn live(
 
 fn live_file(
     input: &Path,
+    burst_dir: Option<&Path>,
+    burst_frames: usize,
     port: &str,
     window_secs: u64,
     interval_secs: u64,
     no_person_after: Duration,
     rotate: FrameRotation,
+    c7_anchor_offset_tag_widths: f64,
     out_dir: &Path,
     baseline_path: Option<&Path>,
     mode_override: DeskModeOverride,
@@ -931,6 +971,13 @@ fn live_file(
         interval_secs,
         window_secs
     );
+    if let Some(dir) = burst_dir {
+        println!(
+            "using burst frames from {}; frames={}",
+            dir.display(),
+            burst_frames.max(1)
+        );
+    }
     emit_badger_startup_status(port, send_badger_enabled);
 
     loop {
@@ -945,6 +992,8 @@ fn live_file(
 
         match analyze_frame_file(
             input,
+            burst_dir,
+            burst_frames.max(1),
             out_dir,
             &mut windows,
             &mut missing_person,
@@ -952,6 +1001,7 @@ fn live_file(
             port,
             no_person_after,
             rotate,
+            c7_anchor_offset_tag_widths,
             baseline_path,
             mode_override,
             badger_orientation,
@@ -971,8 +1021,212 @@ fn live_file(
     Ok(())
 }
 
+#[derive(Debug)]
+struct AnalyzedFrame {
+    path: PathBuf,
+    img: DynamicImage,
+    detections: Vec<DetectionPoint>,
+    frame_count: usize,
+}
+
+fn analyze_frame_source(
+    input: &Path,
+    burst_dir: Option<&Path>,
+    burst_frames: usize,
+    rotate: FrameRotation,
+) -> Result<AnalyzedFrame> {
+    let paths = frame_source_paths(input, burst_dir, burst_frames.max(1))?;
+    let mut frames = Vec::new();
+    for path in paths {
+        match image::open(&path) {
+            Ok(img) => {
+                let img = apply_rotation(img, rotate);
+                match detect_tags(&img) {
+                    Ok(detections) => frames.push(AnalyzedFrame {
+                        path,
+                        img,
+                        detections,
+                        frame_count: 1,
+                    }),
+                    Err(err) => eprintln!("{}: tag detection failed: {err:#}", path.display()),
+                }
+            }
+            Err(err) => eprintln!("{}: image open failed: {err:#}", path.display()),
+        }
+    }
+
+    if frames.is_empty() {
+        bail!("no readable frame source found for {}", input.display());
+    }
+    if frames.len() == 1 {
+        return Ok(frames.remove(0));
+    }
+
+    let frame_count = frames.len();
+    let best_index = frames
+        .iter()
+        .enumerate()
+        .max_by_key(|(_, frame)| detection_set_score(&frame.detections))
+        .map(|(idx, _)| idx)
+        .unwrap_or(0);
+    let fused_detections = fuse_burst_detections(&frames, &frames[best_index].detections);
+    let mut selected = frames.swap_remove(best_index);
+    selected.detections = fused_detections;
+    selected.frame_count = frame_count;
+    Ok(selected)
+}
+
+fn frame_source_paths(
+    input: &Path,
+    burst_dir: Option<&Path>,
+    burst_frames: usize,
+) -> Result<Vec<PathBuf>> {
+    let mut candidates = Vec::new();
+    if let Some(dir) = burst_dir {
+        if dir.exists() {
+            for entry in fs::read_dir(dir).with_context(|| format!("reading {}", dir.display()))? {
+                let entry = entry?;
+                let path = entry.path();
+                if !is_image_file(&path) {
+                    continue;
+                }
+                let modified = entry
+                    .metadata()
+                    .and_then(|meta| meta.modified())
+                    .unwrap_or(UNIX_EPOCH);
+                candidates.push((modified, path));
+            }
+        }
+    }
+    if input.exists() {
+        let modified = fs::metadata(input)
+            .and_then(|meta| meta.modified())
+            .unwrap_or(UNIX_EPOCH);
+        candidates.push((modified, input.to_path_buf()));
+    }
+    candidates.sort_by(|a, b| b.0.cmp(&a.0));
+
+    let mut paths = Vec::new();
+    for (_, path) in candidates {
+        if paths.iter().any(|existing| existing == &path) {
+            continue;
+        }
+        paths.push(path);
+        if paths.len() >= burst_frames {
+            break;
+        }
+    }
+    Ok(paths)
+}
+
+fn is_image_file(path: &Path) -> bool {
+    path.extension()
+        .and_then(OsStr::to_str)
+        .map(|ext| matches!(ext.to_ascii_lowercase().as_str(), "png" | "jpg" | "jpeg"))
+        .unwrap_or(false)
+}
+
+fn detection_set_score(detections: &[DetectionPoint]) -> i32 {
+    let required_count = [EAR_ID, C7_ID, SHOULDER_ID]
+        .into_iter()
+        .filter(|id| detections.iter().any(|det| det.id == *id))
+        .count() as i32;
+    let hip_bonus = if detections.iter().any(|det| det.id == HIP_ID) {
+        1
+    } else {
+        0
+    };
+    let placement_bonus = if required_count == 3 {
+        estimate_placement_from_detections(detections).score as i32
+    } else {
+        0
+    };
+    let edge = average_tag_edge_px(detections).unwrap_or(0.0).round() as i32;
+    required_count * 1000
+        + hip_bonus * 250
+        + placement_bonus * 5
+        + detections.len() as i32 * 100
+        + edge
+}
+
+fn fuse_burst_detections(
+    frames: &[AnalyzedFrame],
+    anchor_detections: &[DetectionPoint],
+) -> Vec<DetectionPoint> {
+    [EAR_ID, C7_ID, SHOULDER_ID, HIP_ID]
+        .into_iter()
+        .filter_map(|id| fuse_tag_detection(id, frames, anchor_detections))
+        .collect()
+}
+
+fn fuse_tag_detection(
+    id: usize,
+    frames: &[AnalyzedFrame],
+    anchor_detections: &[DetectionPoint],
+) -> Option<DetectionPoint> {
+    let anchor = strongest_detection(anchor_detections, id);
+    let mut observations = frames
+        .iter()
+        .filter_map(|frame| strongest_detection(&frame.detections, id).cloned())
+        .collect::<Vec<_>>();
+    if let Some(anchor) = anchor {
+        let radius = (tag_edge_px(anchor) * 6.0).max(90.0);
+        observations.retain(|det| point_distance(det.center, anchor.center) <= radius);
+        if observations.is_empty() {
+            observations.push(anchor.clone());
+        }
+    }
+    if observations.is_empty() {
+        return None;
+    }
+
+    let best = observations
+        .iter()
+        .max_by(|a, b| tag_edge_px(a).total_cmp(&tag_edge_px(b)))
+        .cloned()?;
+    let center = Point::new(
+        median_f64(observations.iter().map(|det| det.center.x).collect()),
+        median_f64(observations.iter().map(|det| det.center.y).collect()),
+    );
+    let dx = center.x - best.center.x;
+    let dy = center.y - best.center.y;
+    let mut corners = best.corners;
+    for corner in &mut corners {
+        corner[0] += dx;
+        corner[1] += dy;
+    }
+    Some(DetectionPoint {
+        id,
+        center,
+        corners,
+    })
+}
+
+fn strongest_detection(detections: &[DetectionPoint], id: usize) -> Option<&DetectionPoint> {
+    detections
+        .iter()
+        .filter(|det| det.id == id)
+        .max_by(|a, b| tag_edge_px(a).total_cmp(&tag_edge_px(b)))
+}
+
+fn point_distance(a: Point, b: Point) -> f64 {
+    (a.x - b.x).hypot(a.y - b.y)
+}
+
+fn median_f64(mut values: Vec<f64>) -> f64 {
+    values.sort_by(f64::total_cmp);
+    let mid = values.len() / 2;
+    if values.len() % 2 == 0 {
+        (values[mid - 1] + values[mid]) / 2.0
+    } else {
+        values[mid]
+    }
+}
+
 fn analyze_frame_file(
     input: &Path,
+    burst_dir: Option<&Path>,
+    burst_frames: usize,
     out_dir: &Path,
     windows: &mut ModeRollingWindows,
     missing_person: &mut MissingPersonState,
@@ -980,13 +1234,22 @@ fn analyze_frame_file(
     port: &str,
     no_person_after: Duration,
     rotate: FrameRotation,
+    c7_anchor_offset_tag_widths: f64,
     baseline_path: Option<&Path>,
     mode_override: DeskModeOverride,
     badger_orientation: BadgerOrientation,
 ) -> Result<FrameAnalysisOutcome> {
-    let img = image::open(input).with_context(|| format!("opening {}", input.display()))?;
-    let img = apply_rotation(img, rotate);
-    let detections = detect_tags(&img)?;
+    let analyzed = analyze_frame_source(input, burst_dir, burst_frames, rotate)?;
+    let img = analyzed.img;
+    let detections = apply_c7_anchor_correction(&analyzed.detections, c7_anchor_offset_tag_widths);
+    let input = analyzed.path;
+    if analyzed.frame_count > 1 {
+        println!(
+            "BURST,frames={},source={}",
+            analyzed.frame_count,
+            input.display()
+        );
+    }
     let tag_debug = out_dir.join("latest-tags.png");
     write_tag_debug_image(&img, &detections, &tag_debug)?;
     emit_tag_status(&detections);
@@ -996,7 +1259,7 @@ fn analyze_frame_file(
     emit_placement_status(&placement);
     if !has_required_posture_tags(&detections) {
         let report = out_dir.join("latest-tags.txt");
-        write_tag_report(input, &img, &detections, None, &report)?;
+        write_tag_report(&input, &img, &detections, None, &report)?;
         eprintln!("{}", missing_required_tags_message(&detections));
         missing_person.record_missing(
             no_person_after,
@@ -1008,10 +1271,10 @@ fn analyze_frame_file(
     }
     let posture = posture_from_detections(&detections)?;
     let report = out_dir.join("latest-tags.txt");
-    write_tag_report(input, &img, &detections, Some(&posture), &report)?;
+    write_tag_report(&input, &img, &detections, Some(&posture), &report)?;
     missing_person.clear();
     if !placement.is_good() {
-        print_posture(input, &posture, None);
+        print_posture(&input, &posture, None);
         let debug = out_dir.join("latest-analysis.png");
         write_debug_image(&img, &detections, &posture, &debug)?;
         publish_badger_message(
@@ -1035,7 +1298,7 @@ fn analyze_frame_file(
                 }
             },
         );
-    print_posture(input, &avg, drift.as_ref());
+    print_posture(&input, &avg, drift.as_ref());
     let debug = out_dir.join("latest-analysis.png");
     write_debug_image(&img, &detections, &avg, &debug)?;
     publish_posture(
@@ -1584,6 +1847,102 @@ fn detect_tags(img: &DynamicImage) -> Result<Vec<DetectionPoint>> {
         })
         .collect();
     Ok(detections)
+}
+
+fn apply_c7_anchor_correction(
+    detections: &[DetectionPoint],
+    offset_tag_widths: f64,
+) -> Vec<DetectionPoint> {
+    if offset_tag_widths <= 0.0 {
+        return detections.to_vec();
+    }
+
+    let Some(ear) = strongest_detection(detections, EAR_ID).map(|det| det.center) else {
+        return detections.to_vec();
+    };
+    let Some(shoulder) = strongest_detection(detections, SHOULDER_ID).map(|det| det.center) else {
+        return detections.to_vec();
+    };
+
+    detections
+        .iter()
+        .map(|det| {
+            let mut corrected = det.clone();
+            if det.id == C7_ID {
+                corrected.center = corrected_c7_anchor(det, ear, shoulder, offset_tag_widths);
+            }
+            corrected
+        })
+        .collect()
+}
+
+fn corrected_c7_anchor(
+    det: &DetectionPoint,
+    ear: Point,
+    shoulder: Point,
+    offset_tag_widths: f64,
+) -> Point {
+    let tag_width = tag_edge_px(det);
+    let shift = tag_width * offset_tag_widths;
+    if shift <= 0.0 {
+        return det.center;
+    }
+
+    let axes = tag_unit_axes(det);
+    let current_distance = distance_to_segment(det.center, ear, shoulder);
+    let mut best = (current_distance, det.center);
+    for axis in axes {
+        for direction in [-1.0, 1.0] {
+            let candidate = Point::new(
+                det.center.x + axis.x * shift * direction,
+                det.center.y + axis.y * shift * direction,
+            );
+            let distance = distance_to_segment(candidate, ear, shoulder);
+            if distance < best.0 {
+                best = (distance, candidate);
+            }
+        }
+    }
+
+    if best.0 + tag_width * 0.1 < current_distance {
+        best.1
+    } else {
+        det.center
+    }
+}
+
+fn tag_unit_axes(det: &DetectionPoint) -> [Point; 2] {
+    [
+        unit_vector(
+            det.corners[1][0] - det.corners[0][0],
+            det.corners[1][1] - det.corners[0][1],
+        ),
+        unit_vector(
+            det.corners[3][0] - det.corners[0][0],
+            det.corners[3][1] - det.corners[0][1],
+        ),
+    ]
+}
+
+fn unit_vector(dx: f64, dy: f64) -> Point {
+    let length = dx.hypot(dy);
+    if length <= f64::EPSILON {
+        Point::new(1.0, 0.0)
+    } else {
+        Point::new(dx / length, dy / length)
+    }
+}
+
+fn distance_to_segment(point: Point, a: Point, b: Point) -> f64 {
+    let dx = b.x - a.x;
+    let dy = b.y - a.y;
+    let len_sq = dx * dx + dy * dy;
+    if len_sq <= f64::EPSILON {
+        return point_distance(point, a);
+    }
+    let t = (((point.x - a.x) * dx + (point.y - a.y) * dy) / len_sq).clamp(0.0, 1.0);
+    let projected = Point::new(a.x + t * dx, a.y + t * dy);
+    point_distance(point, projected)
 }
 
 fn estimate_mode_from_detections(detections: &[DetectionPoint]) -> ModeEstimate {
@@ -3105,6 +3464,48 @@ mod tests {
             .expect("sitting average");
         assert_eq!(sitting.cva_degrees, Some(45.0));
         assert_eq!(sitting.head_forward_px, Some(15.0));
+    }
+
+    #[test]
+    fn burst_fusion_combines_tags_seen_across_frames() {
+        let frames = vec![
+            test_analyzed_frame(vec![
+                test_detection(EAR_ID, 10.0, 10.0),
+                test_detection(SHOULDER_ID, 10.0, 40.0),
+            ]),
+            test_analyzed_frame(vec![
+                test_detection(C7_ID, 10.0, 25.0),
+                test_detection(HIP_ID, 10.0, 80.0),
+            ]),
+        ];
+        let fused = fuse_burst_detections(&frames, &frames[0].detections);
+        let ids = fused.iter().map(|det| det.id).collect::<Vec<_>>();
+        assert_eq!(ids, vec![EAR_ID, C7_ID, SHOULDER_ID, HIP_ID]);
+    }
+
+    #[test]
+    fn c7_anchor_correction_moves_flag_center_toward_neck_line() {
+        let detections = vec![
+            test_detection(EAR_ID, 0.0, 0.0),
+            test_detection(C7_ID, 20.0, 20.0),
+            test_detection(SHOULDER_ID, 0.0, 40.0),
+        ];
+        let corrected = apply_c7_anchor_correction(&detections, 1.0);
+        let c7 = corrected
+            .iter()
+            .find(|det| det.id == C7_ID)
+            .expect("C7 detection");
+        assert!((c7.center.x - 0.0).abs() < 0.1);
+        assert!((c7.center.y - 20.0).abs() < 0.1);
+    }
+
+    fn test_analyzed_frame(detections: Vec<DetectionPoint>) -> AnalyzedFrame {
+        AnalyzedFrame {
+            path: PathBuf::from("test.jpg"),
+            img: DynamicImage::new_rgba8(1, 1),
+            detections,
+            frame_count: 1,
+        }
     }
 
     fn test_detection(id: usize, x: f64, y: f64) -> DetectionPoint {

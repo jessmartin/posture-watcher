@@ -149,9 +149,14 @@ final class PostureWatcherLauncher: NSObject, NSApplicationDelegate, AVCaptureVi
     private let captureQueue = DispatchQueue(label: "local.posture-watcher.capture")
     private let ciContext = CIContext()
     private var lastWrite = Date.distantPast
+    private var lastBurstWrite = Date.distantPast
     private var frameURL: URL!
+    private var burstDirURL: URL!
     private var logURL: URL!
     private var intervalSeconds = 5.0
+    private var burstWriteIntervalSeconds = 0.25
+    private var burstFrameCount = 8
+    private var burstFrameIndex = 0
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         do {
@@ -580,10 +585,17 @@ final class PostureWatcherLauncher: NSObject, NSApplicationDelegate, AVCaptureVi
         do {
             let supportURL = try appSupportURL()
             frameURL = supportURL.appendingPathComponent("latest-frame.jpg")
-            intervalSeconds = Double(ProcessInfo.processInfo.environment["POSTURE_WATCHER_INTERVAL_SECS"] ?? "5") ?? 5.0
+            burstDirURL = supportURL.appendingPathComponent("burst", isDirectory: true)
+            let env = ProcessInfo.processInfo.environment
+            intervalSeconds = Double(env["POSTURE_WATCHER_INTERVAL_SECS"] ?? "5") ?? 5.0
+            burstWriteIntervalSeconds = Double(env["POSTURE_WATCHER_BURST_FRAME_INTERVAL_SECS"] ?? "0.25") ?? 0.25
+            burstFrameCount = max(1, Int(env["POSTURE_WATCHER_BURST_FRAMES"] ?? "8") ?? 8)
+            try FileManager.default.createDirectory(at: burstDirURL, withIntermediateDirectories: true)
             log("support directory: \(supportURL.path)")
             log("frame path: \(frameURL.path)")
             log("capture interval: \(intervalSeconds)s")
+            log("burst directory: \(burstDirURL.path)")
+            log("burst capture: \(burstFrameCount) frames every \(burstWriteIntervalSeconds)s")
             try configureCapture()
             runPostureWatcher(inputURL: frameURL, supportURL: supportURL)
             session.startRunning()
@@ -708,6 +720,9 @@ final class PostureWatcherLauncher: NSObject, NSApplicationDelegate, AVCaptureVi
         let noPersonAfter = env["POSTURE_WATCHER_NO_PERSON_AFTER_SECS"] ?? "30"
         let rotation = env["POSTURE_WATCHER_ROTATE"] ?? "ccw90"
         let outDir = supportURL.appendingPathComponent("analysis").path
+        let burstDir = supportURL.appendingPathComponent("burst", isDirectory: true).path
+        let burstFrames = env["POSTURE_WATCHER_BURST_FRAMES"] ?? "\(burstFrameCount)"
+        let c7AnchorOffset = env["POSTURE_WATCHER_C7_ANCHOR_OFFSET_TAG_WIDTHS"] ?? "0.75"
         let postureMode = analyzerModeArgument()
         let badgerOrientation = badgerOrientationArgument()
 
@@ -716,6 +731,8 @@ final class PostureWatcherLauncher: NSObject, NSApplicationDelegate, AVCaptureVi
         var arguments = [
             "live-file",
             "--input", inputURL.path,
+            "--burst-dir", burstDir,
+            "--burst-frames", burstFrames,
             "--port", port,
             "--window-secs", window,
             "--interval-secs", interval,
@@ -723,6 +740,7 @@ final class PostureWatcherLauncher: NSObject, NSApplicationDelegate, AVCaptureVi
             "--rotate", rotation,
             "--out-dir", outDir,
             "--mode", postureMode,
+            "--c7-anchor-offset-tag-widths", c7AnchorOffset,
             "--badger-orientation", badgerOrientation
         ]
         if env["POSTURE_WATCHER_NO_BADGER"] == "1" || !FileManager.default.fileExists(atPath: port) {
@@ -1183,8 +1201,15 @@ final class PostureWatcherLauncher: NSObject, NSApplicationDelegate, AVCaptureVi
 
     func captureOutput(_ output: AVCaptureOutput, didOutput sampleBuffer: CMSampleBuffer, from connection: AVCaptureConnection) {
         let now = Date()
-        guard now.timeIntervalSince(lastWrite) >= intervalSeconds else { return }
-        lastWrite = now
+        let shouldWriteLatest = now.timeIntervalSince(lastWrite) >= intervalSeconds
+        let shouldWriteBurst = now.timeIntervalSince(lastBurstWrite) >= burstWriteIntervalSeconds
+        guard shouldWriteLatest || shouldWriteBurst else { return }
+        if shouldWriteLatest {
+            lastWrite = now
+        }
+        if shouldWriteBurst {
+            lastBurstWrite = now
+        }
 
         guard let pixelBuffer = CMSampleBufferGetImageBuffer(sampleBuffer) else { return }
         let ciImage = CIImage(cvPixelBuffer: pixelBuffer)
@@ -1193,18 +1218,30 @@ final class PostureWatcherLauncher: NSObject, NSApplicationDelegate, AVCaptureVi
         guard let data = rep.representation(using: .jpeg, properties: [.compressionFactor: 0.85]) else { return }
 
         do {
-            let tmpURL = frameURL.appendingPathExtension("tmp")
-            try data.write(to: tmpURL, options: .atomic)
-            if FileManager.default.fileExists(atPath: frameURL.path) {
-                _ = try FileManager.default.replaceItemAt(frameURL, withItemAt: tmpURL)
-            } else {
-                try FileManager.default.moveItem(at: tmpURL, to: frameURL)
+            if shouldWriteBurst {
+                let index = burstFrameIndex % max(1, burstFrameCount)
+                burstFrameIndex = (burstFrameIndex + 1) % max(1, burstFrameCount)
+                let burstURL = burstDirURL.appendingPathComponent(String(format: "burst-%02d.jpg", index))
+                try writeJPEGData(data, to: burstURL)
             }
-            log("wrote frame: \(frameURL.path)")
+            if shouldWriteLatest {
+                try writeJPEGData(data, to: frameURL)
+                log("wrote frame: \(frameURL.path)")
+            }
         } catch {
             let message = "Posture Watcher frame write failed: \(error.localizedDescription)"
             log(message)
             fputs(message + "\n", stderr)
+        }
+    }
+
+    private func writeJPEGData(_ data: Data, to url: URL) throws {
+        let tmpURL = url.appendingPathExtension("tmp")
+        try data.write(to: tmpURL, options: .atomic)
+        if FileManager.default.fileExists(atPath: url.path) {
+            _ = try FileManager.default.replaceItemAt(url, withItemAt: tmpURL)
+        } else {
+            try FileManager.default.moveItem(at: tmpURL, to: url)
         }
     }
 
