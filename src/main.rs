@@ -126,6 +126,8 @@ enum Commands {
         #[arg(long, default_value = "artifacts/live")]
         out_dir: PathBuf,
         #[arg(long)]
+        baseline: Option<PathBuf>,
+        #[arg(long)]
         no_badger: bool,
     },
     /// Analyze a repeatedly updated image file, preserving rolling posture state.
@@ -144,6 +146,8 @@ enum Commands {
         rotate: FrameRotation,
         #[arg(long, default_value = "artifacts/live-file")]
         out_dir: PathBuf,
+        #[arg(long)]
+        baseline: Option<PathBuf>,
         #[arg(long)]
         no_badger: bool,
     },
@@ -222,7 +226,7 @@ enum FrameRotation {
     Deg180,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 enum DetectedDeskMode {
     Sitting,
     Standing,
@@ -360,6 +364,12 @@ struct RollingWindow {
 }
 
 #[derive(Debug)]
+struct ModeRollingWindows {
+    window: Duration,
+    frames_by_mode: BTreeMap<DetectedDeskMode, RollingWindow>,
+}
+
+#[derive(Debug)]
 struct MissingPersonState {
     first_missing: Option<Instant>,
     message_sent: bool,
@@ -399,7 +409,7 @@ fn main() -> Result<()> {
             let img = apply_rotation(img, rotate);
             let detections = detect_tags(&img)?;
             let posture = posture_from_detections(&detections)?;
-            print_posture(&input, &posture);
+            print_posture(&input, &posture, None);
             if let Some(out) = annotated_out {
                 write_debug_image(&img, &detections, &posture, &out)?;
                 println!("wrote {}", out.display());
@@ -444,6 +454,7 @@ fn main() -> Result<()> {
             no_person_after_secs,
             rotate,
             out_dir,
+            baseline,
             no_badger,
         } => live(
             &camera,
@@ -456,6 +467,7 @@ fn main() -> Result<()> {
             Duration::from_secs(no_person_after_secs),
             rotate,
             &out_dir,
+            baseline.as_deref(),
             !no_badger,
         ),
         Commands::LiveFile {
@@ -466,6 +478,7 @@ fn main() -> Result<()> {
             no_person_after_secs,
             rotate,
             out_dir,
+            baseline,
             no_badger,
         } => live_file(
             &input,
@@ -475,6 +488,7 @@ fn main() -> Result<()> {
             Duration::from_secs(no_person_after_secs),
             rotate,
             &out_dir,
+            baseline.as_deref(),
             !no_badger,
         ),
         Commands::Doctor {
@@ -636,7 +650,7 @@ fn snapshot_frame(
     }
 
     let posture = posture_from_detections(&detections)?;
-    print_posture(input, &posture);
+    print_posture(input, &posture, None);
     write_tag_report(input, &img, &detections, Some(&posture), &report)?;
     println!("wrote {}", report.display());
     let analysis = out_dir.join("latest-analysis.png");
@@ -674,7 +688,7 @@ fn run_samples(
         let posture = posture_from_detections(&detections)?;
         window.push(posture);
         let avg = window.average().context("rolling average is empty")?;
-        print_posture(&path, &avg);
+        print_posture(&path, &avg, None);
         let out = out_dir.join(format!(
             "{}-analysis.png",
             path.file_stem().and_then(OsStr::to_str).unwrap_or("sample")
@@ -682,7 +696,7 @@ fn run_samples(
         write_debug_image(&img, &detections, &avg, &out)?;
         println!("wrote {}", out.display());
         if send_badger_enabled {
-            publish_posture(port, &avg, true)?;
+            publish_posture(port, &avg, None, true)?;
             thread::sleep(Duration::from_millis(delay_ms));
         }
     }
@@ -700,10 +714,11 @@ fn live(
     no_person_after: Duration,
     rotate: FrameRotation,
     out_dir: &Path,
+    baseline_path: Option<&Path>,
     send_badger_enabled: bool,
 ) -> Result<()> {
     fs::create_dir_all(out_dir).with_context(|| format!("creating {}", out_dir.display()))?;
-    let mut window = RollingWindow::new(Duration::from_secs(window_secs));
+    let mut windows = ModeRollingWindows::new(Duration::from_secs(window_secs));
     let mut missing_person = MissingPersonState::new();
     println!(
         "starting live capture from {camera}; press Ctrl-C to stop; interval={}s window={}s rotate={rotate:?}",
@@ -721,12 +736,13 @@ fn live(
         match analyze_frame_file(
             &capture,
             out_dir,
-            &mut window,
+            &mut windows,
             &mut missing_person,
             send_badger_enabled,
             port,
             no_person_after,
             rotate,
+            baseline_path,
         ) {
             Ok(FrameAnalysisOutcome::Posture) => {}
             Ok(FrameAnalysisOutcome::MissingRequiredTags) => {}
@@ -747,10 +763,11 @@ fn live_file(
     no_person_after: Duration,
     rotate: FrameRotation,
     out_dir: &Path,
+    baseline_path: Option<&Path>,
     send_badger_enabled: bool,
 ) -> Result<()> {
     fs::create_dir_all(out_dir).with_context(|| format!("creating {}", out_dir.display()))?;
-    let mut window = RollingWindow::new(Duration::from_secs(window_secs));
+    let mut windows = ModeRollingWindows::new(Duration::from_secs(window_secs));
     let mut missing_person = MissingPersonState::new();
     println!(
         "starting live-file from {}; press Ctrl-C to stop; interval={}s window={}s rotate={rotate:?}",
@@ -770,12 +787,13 @@ fn live_file(
         match analyze_frame_file(
             input,
             out_dir,
-            &mut window,
+            &mut windows,
             &mut missing_person,
             send_badger_enabled,
             port,
             no_person_after,
             rotate,
+            baseline_path,
         ) {
             Ok(FrameAnalysisOutcome::Posture) => {}
             Ok(FrameAnalysisOutcome::MissingRequiredTags) => {}
@@ -790,12 +808,13 @@ fn live_file(
 fn analyze_frame_file(
     input: &Path,
     out_dir: &Path,
-    window: &mut RollingWindow,
+    windows: &mut ModeRollingWindows,
     missing_person: &mut MissingPersonState,
     send_badger_enabled: bool,
     port: &str,
     no_person_after: Duration,
     rotate: FrameRotation,
+    baseline_path: Option<&Path>,
 ) -> Result<FrameAnalysisOutcome> {
     let img = image::open(input).with_context(|| format!("opening {}", input.display()))?;
     let img = apply_rotation(img, rotate);
@@ -803,7 +822,8 @@ fn analyze_frame_file(
     let tag_debug = out_dir.join("latest-tags.png");
     write_tag_debug_image(&img, &detections, &tag_debug)?;
     emit_tag_status(&detections);
-    emit_mode_status(&estimate_mode_from_detections(&detections));
+    let mode = estimate_mode_from_detections(&detections);
+    emit_mode_status(&mode);
     let placement = estimate_placement_from_detections(&detections);
     emit_placement_status(&placement);
     if !has_required_posture_tags(&detections) {
@@ -818,18 +838,29 @@ fn analyze_frame_file(
     write_tag_report(input, &img, &detections, Some(&posture), &report)?;
     missing_person.clear();
     if !placement.is_good() {
-        print_posture(input, &posture);
+        print_posture(input, &posture, None);
         let debug = out_dir.join("latest-analysis.png");
         write_debug_image(&img, &detections, &posture, &debug)?;
         publish_badger_message(port, placement.badger_message(), send_badger_enabled)?;
         return Ok(FrameAnalysisOutcome::InvalidPlacement);
     }
-    window.push(posture);
-    let avg = window.average().context("rolling average is empty")?;
-    print_posture(input, &avg);
+    let avg = windows
+        .push(mode.mode, posture)
+        .context("rolling average is empty")?;
+    let drift =
+        baseline_path.and_then(
+            |path| match baseline_drift_for_file(path, mode.mode, &avg) {
+                Ok(drift) => drift,
+                Err(err) => {
+                    eprintln!("baseline drift unavailable: {err:#}");
+                    None
+                }
+            },
+        );
+    print_posture(input, &avg, drift.as_ref());
     let debug = out_dir.join("latest-analysis.png");
     write_debug_image(&img, &detections, &avg, &debug)?;
-    publish_posture(port, &avg, send_badger_enabled)?;
+    publish_posture(port, &avg, drift.as_ref(), send_badger_enabled)?;
     Ok(FrameAnalysisOutcome::Posture)
 }
 
@@ -1682,6 +1713,44 @@ struct SampleStats {
     max: f64,
 }
 
+#[derive(Debug, Clone)]
+struct PostureBaseline {
+    modes: BTreeMap<DetectedDeskMode, ModeBaseline>,
+}
+
+#[derive(Debug, Clone)]
+struct ModeBaseline {
+    ready: bool,
+    accepted: usize,
+    cva_degrees: Option<f64>,
+    head_forward_px: Option<f64>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+struct BaselineDrift {
+    mode: DetectedDeskMode,
+    accepted_samples: usize,
+    cva_delta_degrees: Option<f64>,
+    head_forward_delta_px: Option<f64>,
+}
+
+impl BaselineDrift {
+    fn note(&self) -> String {
+        let mode = match self.mode {
+            DetectedDeskMode::Sitting => "sit",
+            DetectedDeskMode::Standing => "std",
+            DetectedDeskMode::Unknown => "base",
+        };
+        if let Some(delta) = self.cva_delta_degrees {
+            return format!("{mode} {}", signed_round(delta, "deg"));
+        }
+        if let Some(delta) = self.head_forward_delta_px {
+            return format!("{mode} {}", signed_round(delta, "px"));
+        }
+        format!("{mode} base")
+    }
+}
+
 fn calibrate_baseline(
     samples_dir: Option<&Path>,
     out: Option<&Path>,
@@ -1879,6 +1948,76 @@ fn parse_report_f64(values: &BTreeMap<String, String>, key: &str) -> Option<f64>
     values.get(key)?.parse().ok()
 }
 
+fn baseline_drift_for_file(
+    path: &Path,
+    mode: DetectedDeskMode,
+    posture: &PostureFrame,
+) -> Result<Option<BaselineDrift>> {
+    if !path.exists() || mode == DetectedDeskMode::Unknown {
+        return Ok(None);
+    }
+    let baseline = read_posture_baseline(path)?;
+    Ok(baseline.drift_for(mode, posture))
+}
+
+fn read_posture_baseline(path: &Path) -> Result<PostureBaseline> {
+    let values = parse_key_value_file(path)?;
+    let mut modes = BTreeMap::new();
+    for mode in [DetectedDeskMode::Standing, DetectedDeskMode::Sitting] {
+        if let Some(baseline) = parse_mode_baseline(&values, mode) {
+            modes.insert(mode, baseline);
+        }
+    }
+    Ok(PostureBaseline { modes })
+}
+
+fn parse_mode_baseline(
+    values: &BTreeMap<String, String>,
+    mode: DetectedDeskMode,
+) -> Option<ModeBaseline> {
+    let prefix = format!("mode.{}", mode.label());
+    let status = values.get(&format!("{prefix}.status"))?;
+    let accepted = values
+        .get(&format!("{prefix}.accepted"))
+        .and_then(|value| value.parse().ok())
+        .unwrap_or(0);
+    Some(ModeBaseline {
+        ready: status == "ready",
+        accepted,
+        cva_degrees: parse_report_f64(values, &format!("{prefix}.cva_degrees.mean")),
+        head_forward_px: parse_report_f64(values, &format!("{prefix}.head_forward_px.mean")),
+    })
+}
+
+impl PostureBaseline {
+    fn drift_for(&self, mode: DetectedDeskMode, posture: &PostureFrame) -> Option<BaselineDrift> {
+        let baseline = self.modes.get(&mode)?;
+        if !baseline.ready {
+            return None;
+        }
+        Some(BaselineDrift {
+            mode,
+            accepted_samples: baseline.accepted,
+            cva_delta_degrees: posture
+                .cva_degrees
+                .zip(baseline.cva_degrees)
+                .map(|(now, base)| now - base),
+            head_forward_delta_px: posture
+                .head_forward_px
+                .zip(baseline.head_forward_px)
+                .map(|(now, base)| now - base),
+        })
+    }
+}
+
+fn signed_round(value: f64, unit: &str) -> String {
+    if value >= 0.0 {
+        format!("+{value:.0}{unit}")
+    } else {
+        format!("{value:.0}{unit}")
+    }
+}
+
 fn default_samples_dir() -> Result<PathBuf> {
     Ok(default_app_support_dir()?.join("samples"))
 }
@@ -1923,7 +2062,7 @@ fn draw_tag_outline(canvas: &mut RgbaImage, det: &DetectionPoint) {
 }
 
 fn send_to_badger(port_name: &str, posture: &PostureFrame) -> Result<()> {
-    let line = badger_payload(posture);
+    let line = badger_payload(posture, None);
     emit_display_payload(&line);
     send_payload_to_badger(port_name, &line, "OK,P,")
 }
@@ -1931,9 +2070,13 @@ fn send_to_badger(port_name: &str, posture: &PostureFrame) -> Result<()> {
 fn publish_posture(
     port_name: &str,
     posture: &PostureFrame,
+    drift: Option<&BaselineDrift>,
     send_badger_enabled: bool,
 ) -> Result<()> {
-    let line = badger_payload(posture);
+    let note = drift
+        .map(BaselineDrift::note)
+        .unwrap_or_else(|| posture_note(posture));
+    let line = badger_payload(posture, Some(&note));
     emit_display_payload(&line);
     if send_badger_enabled {
         if let Err(err) = send_payload_to_badger(port_name, &line, "OK,P,") {
@@ -2066,20 +2209,32 @@ fn read_badger_reply(port: &mut dyn SerialPort, timeout: Duration) -> Result<Str
     bail!("timed out waiting for Badger ACK")
 }
 
-fn badger_payload(posture: &PostureFrame) -> String {
+fn badger_payload(posture: &PostureFrame, note: Option<&str>) -> String {
     let mut parts = vec!["P".to_string(), posture.display_points.len().to_string()];
     for (_, p) in &posture.display_points {
         parts.push((p.x.round() as i32).clamp(0, BADGER_WIDTH - 1).to_string());
         parts.push((p.y.round() as i32).clamp(0, BADGER_HEIGHT - 1).to_string());
     }
-    parts.push(format!(
+    let fallback_note;
+    let note = match note {
+        Some(note) => note,
+        None => {
+            fallback_note = posture_note(posture);
+            &fallback_note
+        }
+    };
+    parts.push(note.to_string());
+    parts.join(",") + "\n"
+}
+
+fn posture_note(posture: &PostureFrame) -> String {
+    format!(
         "cva={}",
         posture
             .cva_degrees
             .map(|v| format!("{v:.1}"))
             .unwrap_or_else(|| "na".to_string())
-    ));
-    parts.join(",") + "\n"
+    )
 }
 
 fn badger_message_payload(message: &str) -> String {
@@ -2095,8 +2250,8 @@ fn clean_payload_text(message: &str) -> String {
         .collect()
 }
 
-fn print_posture(path: &Path, posture: &PostureFrame) {
-    println!(
+fn print_posture(path: &Path, posture: &PostureFrame, drift: Option<&BaselineDrift>) {
+    let mut line = format!(
         "{}: detected={} points={} cva={} head_forward_px={}",
         path.display(),
         posture.detected_count,
@@ -2110,6 +2265,21 @@ fn print_posture(path: &Path, posture: &PostureFrame) {
             .map(|v| format!("{v:.1}"))
             .unwrap_or_else(|| "n/a".to_string())
     );
+    if let Some(drift) = drift {
+        line.push_str(&format!(
+            " baseline_mode={} cva_delta={} head_forward_delta={}",
+            drift.mode.label(),
+            drift
+                .cva_delta_degrees
+                .map(|v| format!("{v:.1}"))
+                .unwrap_or_else(|| "n/a".to_string()),
+            drift
+                .head_forward_delta_px
+                .map(|v| format!("{v:.1}"))
+                .unwrap_or_else(|| "n/a".to_string())
+        ));
+    }
+    println!("{line}");
 }
 
 impl RollingWindow {
@@ -2170,6 +2340,24 @@ impl RollingWindow {
             cva_degrees: (cva_count > 0).then_some(cva_sum / cva_count as f64),
             head_forward_px: (head_count > 0).then_some(head_sum / head_count as f64),
         })
+    }
+}
+
+impl ModeRollingWindows {
+    fn new(window: Duration) -> Self {
+        Self {
+            window,
+            frames_by_mode: BTreeMap::new(),
+        }
+    }
+
+    fn push(&mut self, mode: DetectedDeskMode, frame: PostureFrame) -> Option<PostureFrame> {
+        let window = self
+            .frames_by_mode
+            .entry(mode)
+            .or_insert_with(|| RollingWindow::new(self.window));
+        window.push(frame);
+        window.average()
     }
 }
 
@@ -2516,6 +2704,52 @@ mod tests {
         Ok(())
     }
 
+    #[test]
+    fn baseline_drift_uses_matching_ready_mode() {
+        let baseline = PostureBaseline {
+            modes: BTreeMap::from([(
+                DetectedDeskMode::Sitting,
+                ModeBaseline {
+                    ready: true,
+                    accepted: 3,
+                    cva_degrees: Some(50.0),
+                    head_forward_px: Some(10.0),
+                },
+            )]),
+        };
+        let posture = test_posture_frame(47.2, 18.0);
+        let drift = baseline
+            .drift_for(DetectedDeskMode::Sitting, &posture)
+            .expect("sitting baseline should apply");
+        assert_eq!(drift.accepted_samples, 3);
+        assert!((drift.cva_delta_degrees.unwrap() + 2.8).abs() < 0.1);
+        assert!((drift.head_forward_delta_px.unwrap() - 8.0).abs() < 0.1);
+        assert_eq!(drift.note(), "sit -3deg");
+        assert!(baseline
+            .drift_for(DetectedDeskMode::Standing, &posture)
+            .is_none());
+    }
+
+    #[test]
+    fn rolling_window_keeps_modes_separate() {
+        let mut windows = ModeRollingWindows::new(Duration::from_secs(120));
+        let sitting = windows
+            .push(DetectedDeskMode::Sitting, test_posture_frame(40.0, 10.0))
+            .expect("sitting window");
+        assert_eq!(sitting.cva_degrees, Some(40.0));
+
+        let standing = windows
+            .push(DetectedDeskMode::Standing, test_posture_frame(70.0, 20.0))
+            .expect("standing window");
+        assert_eq!(standing.cva_degrees, Some(70.0));
+
+        let sitting = windows
+            .push(DetectedDeskMode::Sitting, test_posture_frame(50.0, 20.0))
+            .expect("sitting average");
+        assert_eq!(sitting.cva_degrees, Some(45.0));
+        assert_eq!(sitting.head_forward_px, Some(15.0));
+    }
+
     fn test_detection(id: usize, x: f64, y: f64) -> DetectionPoint {
         DetectionPoint {
             id,
@@ -2526,6 +2760,16 @@ mod tests {
                 [x + 10.0, y + 10.0],
                 [x - 10.0, y + 10.0],
             ],
+        }
+    }
+
+    fn test_posture_frame(cva_degrees: f64, head_forward_px: f64) -> PostureFrame {
+        PostureFrame {
+            landmarks: BTreeMap::new(),
+            display_points: Vec::new(),
+            detected_count: 3,
+            cva_degrees: Some(cva_degrees),
+            head_forward_px: Some(head_forward_px),
         }
     }
 

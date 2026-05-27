@@ -628,6 +628,11 @@ final class PostureWatcherLauncher: NSObject, NSApplicationDelegate, AVCaptureVi
             arguments.append("--no-badger")
             log("Badger disabled for this run")
         }
+        do {
+            arguments.append(contentsOf: ["--baseline", try baselineFileURL().path])
+        } catch {
+            log("baseline path unavailable: \(error.localizedDescription)")
+        }
         task.arguments = arguments
         task.currentDirectoryURL = URL(fileURLWithPath: bundle.resourcePath ?? NSHomeDirectory())
         log("launching analyzer: \(binaryPath) \(task.arguments?.joined(separator: " ") ?? "")")

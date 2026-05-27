@@ -160,7 +160,7 @@ That command averages only `placement_status=good` reports and writes:
 ~/Library/Application Support/Posture Watcher/calibration/baseline.txt
 ```
 
-Use that file for future tuning: the live curve should drift from your own sitting and standing baselines rather than judging every frame against a generic spine curve.
+The live analyzer reads that file while it runs. When a mode baseline is ready, the Badger/app note changes from raw `cva=...` to a compact baseline-relative drift such as `sit -3deg` or `std +2deg`. Sitting and standing each keep their own rolling average window, so switching desk modes does not blend the two postures together.
 
 The app's Baseline row will show `ready`, `need sitting`, `need standing`, or `needs samples` after calibration. `Open Base` opens the generated text file so you can inspect the accepted sample counts and averaged measurements.
 
@@ -246,6 +246,7 @@ cargo run -- live --capture-backend imagesnap
 cargo run -- live --capture-backend ffmpeg --ffmpeg-input "0:none"
 cargo run -- live --capture-timeout-secs 5
 cargo run -- live --rotate none
+cargo run -- live --baseline "$HOME/Library/Application Support/Posture Watcher/calibration/baseline.txt"
 ```
 
 Restore the original Badger launcher:
