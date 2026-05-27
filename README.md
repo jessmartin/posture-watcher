@@ -50,7 +50,7 @@ Launch it:
 open "target/macos/Posture Watcher.app"
 ```
 
-The app should prompt for Camera permission as `Posture Watcher`. It opens a small preview window that mirrors the Badger display, shows Badger connection and visible-tag status, lets you choose the camera, captures frames natively, and runs the bundled Rust binary in `live-file` mode. The Mode picker is a manual field-test label for Auto/Sitting/Standing while collecting real sitting and standing examples. `Open Debug` opens the latest camera/tag debug frame, `Open Tags` generates and opens a printable AprilTag sheet, and `Save Sample` copies the latest frame plus debug images into `~/Library/Application Support/Posture Watcher/samples/<mode>/`. Runtime outputs go under `~/Library/Application Support/Posture Watcher/`.
+The app should prompt for Camera permission as `Posture Watcher`. It opens a small preview window that mirrors the Badger display, shows Badger connection, visible-tag status, and the current auto-detected Sitting/Standing estimate, lets you choose the camera, captures frames natively, and runs the bundled Rust binary in `live-file` mode. The Mode picker is a manual field-test label for Auto/Sitting/Standing while collecting real sitting and standing examples. `Open Debug` opens the latest camera/tag debug frame, `Open Tags` generates and opens a printable AprilTag sheet, and `Save Sample` copies the latest frame, debug images, and `latest-tags.txt` marker report into `~/Library/Application Support/Posture Watcher/samples/<mode>/`. Runtime outputs go under `~/Library/Application Support/Posture Watcher/`.
 
 Watch the app log:
 
@@ -98,6 +98,17 @@ cargo run -- annotate-samples
 cargo run -- run-samples --send-badger
 ```
 
+Analyze the current app frame without starting the live loop:
+
+```sh
+cargo run -- snapshot \
+  --input "$HOME/Library/Application Support/Posture Watcher/latest-frame.jpg" \
+  --rotate ccw90 \
+  --out-dir artifacts/snapshot
+```
+
+That writes `latest-tags.png` plus `latest-tags.txt` with present/missing tags, marker centers, approximate tag size, hip presence, and posture measurements when the required tags are visible.
+
 Restore the original Badger launcher:
 
 ```sh
@@ -134,4 +145,4 @@ The CLI live mode is useful for debugging, but the macOS app wrapper is preferre
 
 ## Sitting vs Standing Mode
 
-Do not rely on a hard-coded sitting/standing classifier yet. With ear/C7/shoulder tags only, the image usually cannot prove whether you are sitting or standing; the hip marker and camera framing are what make it possible. The practical path is to add a manual mode override, collect tagged frames in both modes, and then auto-classify from calibrated marker geometry once the camera position and sticker placement are stable.
+The macOS app shows a first-pass auto-detected Sitting/Standing estimate when shoulder and hip tags are visible. The heuristic treats a mostly vertical shoulder-to-hip axis as Standing, a mostly horizontal shoulder-to-hip axis as Sitting, and ambiguous or missing hip geometry as Unknown. Keep using the Mode picker as the ground-truth label while saving real samples; the saved `latest-tags.txt` reports include `detected_mode`, confidence, and marker geometry for later calibration.

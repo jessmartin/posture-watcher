@@ -72,6 +72,19 @@ enum Commands {
         #[arg(long, default_value = "/dev/cu.usbmodem83201")]
         port: String,
     },
+    /// Analyze one frame and write latest-tags.png, latest-tags.txt, and latest-analysis.png.
+    Snapshot {
+        #[arg(long)]
+        input: PathBuf,
+        #[arg(long, default_value = "artifacts/snapshot")]
+        out_dir: PathBuf,
+        #[arg(long, value_enum, default_value_t = FrameRotation::None)]
+        rotate: FrameRotation,
+        #[arg(long)]
+        send_badger: bool,
+        #[arg(long, default_value = "/dev/cu.usbmodem83201")]
+        port: String,
+    },
     /// Analyze all tagged sample images in order, write debug images, and optionally send to Badger.
     RunSamples {
         #[arg(long, default_value = "artifacts/tagged-samples")]
@@ -199,6 +212,44 @@ enum FrameRotation {
     Deg180,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DetectedDeskMode {
+    Sitting,
+    Standing,
+    Unknown,
+}
+
+impl DetectedDeskMode {
+    fn label(self) -> &'static str {
+        match self {
+            Self::Sitting => "sitting",
+            Self::Standing => "standing",
+            Self::Unknown => "unknown",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ModeEstimate {
+    mode: DetectedDeskMode,
+    confidence: u8,
+    detail: String,
+}
+
+impl ModeEstimate {
+    fn new(mode: DetectedDeskMode, confidence: u8, detail: impl Into<String>) -> Self {
+        Self {
+            mode,
+            confidence,
+            detail: detail.into(),
+        }
+    }
+
+    fn unknown(detail: impl Into<String>) -> Self {
+        Self::new(DetectedDeskMode::Unknown, 0, detail)
+    }
+}
+
 #[derive(Debug, Clone, Copy)]
 struct Point {
     x: f64,
@@ -282,6 +333,13 @@ fn main() -> Result<()> {
             }
             Ok(())
         }
+        Commands::Snapshot {
+            input,
+            out_dir,
+            rotate,
+            send_badger,
+            port,
+        } => snapshot_frame(&input, &out_dir, rotate, send_badger, &port),
         Commands::RunSamples {
             input_dir,
             out_dir,
@@ -468,6 +526,45 @@ fn annotate_samples(input_dir: &Path, out_dir: &Path, tag_px: u32) -> Result<()>
     Ok(())
 }
 
+fn snapshot_frame(
+    input: &Path,
+    out_dir: &Path,
+    rotate: FrameRotation,
+    send_badger_enabled: bool,
+    port: &str,
+) -> Result<()> {
+    fs::create_dir_all(out_dir).with_context(|| format!("creating {}", out_dir.display()))?;
+    let img = image::open(input).with_context(|| format!("opening {}", input.display()))?;
+    let img = apply_rotation(img, rotate);
+    let detections = detect_tags(&img)?;
+
+    let tag_debug = out_dir.join("latest-tags.png");
+    write_tag_debug_image(&img, &detections, &tag_debug)?;
+    println!("wrote {}", tag_debug.display());
+    emit_tag_status(&detections);
+    emit_mode_status(&estimate_mode_from_detections(&detections));
+
+    let report = out_dir.join("latest-tags.txt");
+    if !has_required_posture_tags(&detections) {
+        write_tag_report(input, &img, &detections, None, &report)?;
+        println!("wrote {}", report.display());
+        eprintln!("{}", missing_required_tags_message(&detections));
+        return Ok(());
+    }
+
+    let posture = posture_from_detections(&detections)?;
+    print_posture(input, &posture);
+    write_tag_report(input, &img, &detections, Some(&posture), &report)?;
+    println!("wrote {}", report.display());
+    let analysis = out_dir.join("latest-analysis.png");
+    write_debug_image(&img, &detections, &posture, &analysis)?;
+    println!("wrote {}", analysis.display());
+    if send_badger_enabled {
+        send_to_badger(port, &posture)?;
+    }
+    Ok(())
+}
+
 fn run_samples(
     input_dir: &Path,
     out_dir: &Path,
@@ -617,12 +714,17 @@ fn analyze_frame_file(
     let tag_debug = out_dir.join("latest-tags.png");
     write_tag_debug_image(&img, &detections, &tag_debug)?;
     emit_tag_status(&detections);
+    emit_mode_status(&estimate_mode_from_detections(&detections));
     if !has_required_posture_tags(&detections) {
+        let report = out_dir.join("latest-tags.txt");
+        write_tag_report(input, &img, &detections, None, &report)?;
         eprintln!("{}", missing_required_tags_message(&detections));
         missing_person.record_missing(no_person_after, port, send_badger_enabled)?;
         return Ok(FrameAnalysisOutcome::MissingRequiredTags);
     }
     let posture = posture_from_detections(&detections)?;
+    let report = out_dir.join("latest-tags.txt");
+    write_tag_report(input, &img, &detections, Some(&posture), &report)?;
     missing_person.clear();
     window.push(posture);
     let avg = window.average().context("rolling average is empty")?;
@@ -1108,6 +1210,46 @@ fn detect_tags(img: &DynamicImage) -> Result<Vec<DetectionPoint>> {
     Ok(detections)
 }
 
+fn estimate_mode_from_detections(detections: &[DetectionPoint]) -> ModeEstimate {
+    let landmarks = detections
+        .iter()
+        .map(|det| (det.id, det.center))
+        .collect::<BTreeMap<_, _>>();
+    estimate_mode_from_landmarks(&landmarks)
+}
+
+fn estimate_mode_from_landmarks(landmarks: &BTreeMap<usize, Point>) -> ModeEstimate {
+    let Some(shoulder) = landmarks.get(&SHOULDER_ID) else {
+        return ModeEstimate::unknown("needs shoulder and hip tags");
+    };
+    let Some(hip) = landmarks.get(&HIP_ID) else {
+        return ModeEstimate::unknown("needs hip tag");
+    };
+
+    let dx = hip.x - shoulder.x;
+    let dy = hip.y - shoulder.y;
+    let distance = dx.hypot(dy);
+    if distance < 30.0 {
+        return ModeEstimate::unknown("shoulder hip too close");
+    }
+
+    let angle_from_vertical = dx.abs().atan2(dy.abs().max(1.0)).to_degrees();
+    let detail =
+        format!("shoulder_hip_from_vertical={angle_from_vertical:.0}deg dx={dx:.0} dy={dy:.0}");
+    if angle_from_vertical <= 30.0 && dy >= -30.0 {
+        let confidence = (95.0 - angle_from_vertical).round().clamp(60.0, 95.0) as u8;
+        return ModeEstimate::new(DetectedDeskMode::Standing, confidence, detail);
+    }
+    if angle_from_vertical >= 55.0 {
+        let confidence = (55.0 + (angle_from_vertical - 55.0) * 1.2)
+            .round()
+            .clamp(60.0, 95.0) as u8;
+        return ModeEstimate::new(DetectedDeskMode::Sitting, confidence, detail);
+    }
+
+    ModeEstimate::new(DetectedDeskMode::Unknown, 35, detail)
+}
+
 fn posture_from_detections(detections: &[DetectionPoint]) -> Result<PostureFrame> {
     let mut landmarks = BTreeMap::new();
     for det in detections {
@@ -1242,6 +1384,110 @@ fn write_tag_debug_image(
     Ok(())
 }
 
+fn write_tag_report(
+    input: &Path,
+    img: &DynamicImage,
+    detections: &[DetectionPoint],
+    posture: Option<&PostureFrame>,
+    out: &Path,
+) -> Result<()> {
+    ensure_parent(out)?;
+    let mut ids = detections.iter().map(|det| det.id).collect::<Vec<_>>();
+    ids.sort_unstable();
+    ids.dedup();
+
+    let present = [EAR_ID, C7_ID, SHOULDER_ID, HIP_ID]
+        .into_iter()
+        .filter(|id| ids.contains(id))
+        .map(tag_short_label)
+        .collect::<Vec<_>>();
+    let missing_required = [EAR_ID, C7_ID, SHOULDER_ID]
+        .into_iter()
+        .filter(|id| !ids.contains(id))
+        .map(tag_short_label)
+        .collect::<Vec<_>>();
+    let status = if missing_required.is_empty() {
+        "ready"
+    } else {
+        "missing"
+    };
+
+    let mut lines = vec![
+        format!("input={}", input.display()),
+        format!("image_width={}", img.width()),
+        format!("image_height={}", img.height()),
+        format!("status={status}"),
+        format!("present={}", present.join(" ")),
+        format!("missing_required={}", missing_required.join(" ")),
+        format!("tag_count={}", detections.len()),
+        format!("hip_present={}", ids.contains(&HIP_ID)),
+    ];
+
+    let mode_estimate = estimate_mode_from_detections(detections);
+    lines.push(format!("detected_mode={}", mode_estimate.mode.label()));
+    lines.push(format!(
+        "detected_mode_confidence={}",
+        mode_estimate.confidence
+    ));
+    lines.push(format!("detected_mode_detail={}", mode_estimate.detail));
+
+    for det in detections {
+        lines.push(format!("tag.{}.label={}", det.id, tag_short_label(det.id)));
+        lines.push(format!("tag.{}.center_x={:.1}", det.id, det.center.x));
+        lines.push(format!("tag.{}.center_y={:.1}", det.id, det.center.y));
+        lines.push(format!("tag.{}.edge_px={:.1}", det.id, tag_edge_px(det)));
+    }
+
+    match posture {
+        Some(posture) => {
+            lines.push(format!(
+                "posture.cva_degrees={}",
+                posture
+                    .cva_degrees
+                    .map(|v| format!("{v:.1}"))
+                    .unwrap_or_else(|| "n/a".to_string())
+            ));
+            lines.push(format!(
+                "posture.head_forward_px={}",
+                posture
+                    .head_forward_px
+                    .map(|v| format!("{v:.1}"))
+                    .unwrap_or_else(|| "n/a".to_string())
+            ));
+            let display_points = posture
+                .display_points
+                .iter()
+                .map(|(id, p)| format!("{}:{:.1}:{:.1}", tag_short_label(*id), p.x, p.y))
+                .collect::<Vec<_>>();
+            lines.push(format!(
+                "posture.display_points={}",
+                display_points.join(" ")
+            ));
+        }
+        None => {
+            lines.push("posture.cva_degrees=n/a".to_string());
+            lines.push("posture.head_forward_px=n/a".to_string());
+            lines.push("posture.display_points=".to_string());
+        }
+    }
+
+    fs::write(out, lines.join("\n") + "\n")
+        .with_context(|| format!("writing {}", out.display()))?;
+    Ok(())
+}
+
+fn tag_edge_px(det: &DetectionPoint) -> f64 {
+    let mut sum = 0.0;
+    for i in 0..4 {
+        let a = det.corners[i];
+        let b = det.corners[(i + 1) % 4];
+        let dx = a[0] - b[0];
+        let dy = a[1] - b[1];
+        sum += (dx * dx + dy * dy).sqrt();
+    }
+    sum / 4.0
+}
+
 fn draw_tag_outline(canvas: &mut RgbaImage, det: &DetectionPoint) {
     for i in 0..4 {
         let a = det.corners[i];
@@ -1329,6 +1575,15 @@ fn emit_badger_startup_status(port_name: &str, send_badger_enabled: bool) {
 
 fn emit_badger_status(status: &str, detail: &str) {
     println!("BADGER,{status},{}", clean_payload_text(detail));
+}
+
+fn emit_mode_status(estimate: &ModeEstimate) {
+    println!(
+        "MODE,{},{},{}",
+        estimate.mode.label(),
+        estimate.confidence,
+        clean_payload_text(&estimate.detail)
+    );
 }
 
 fn write_payload(port: &mut dyn SerialPort, line: &str) -> Result<()> {
@@ -1729,5 +1984,67 @@ mod tests {
         let detections = detect_tags(&img)?;
         assert!(detections.iter().any(|d| d.id == EAR_ID));
         Ok(())
+    }
+
+    #[test]
+    fn tag_report_includes_readiness_and_measurements() -> Result<()> {
+        let img = DynamicImage::ImageRgba8(RgbaImage::new(100, 100));
+        let detections = vec![
+            test_detection(EAR_ID, 20.0, 20.0),
+            test_detection(C7_ID, 28.0, 42.0),
+            test_detection(SHOULDER_ID, 40.0, 52.0),
+            test_detection(HIP_ID, 43.0, 82.0),
+        ];
+        let posture = posture_from_detections(&detections)?;
+        let out = Path::new("target/test-output/tag-report.txt");
+        write_tag_report(
+            Path::new("frame.jpg"),
+            &img,
+            &detections,
+            Some(&posture),
+            out,
+        )?;
+        let text = fs::read_to_string(out)?;
+        assert!(text.contains("status=ready"));
+        assert!(text.contains("present=ear C7 shoulder hip"));
+        assert!(text.contains("hip_present=true"));
+        assert!(text.contains("detected_mode=standing"));
+        assert!(text.contains("tag.0.center_x=20.0"));
+        assert!(text.contains("posture.cva_degrees="));
+        Ok(())
+    }
+
+    #[test]
+    fn mode_estimator_uses_shoulder_to_hip_axis() {
+        let standing = BTreeMap::from([
+            (SHOULDER_ID, Point::new(50.0, 20.0)),
+            (HIP_ID, Point::new(56.0, 110.0)),
+        ]);
+        assert_eq!(
+            estimate_mode_from_landmarks(&standing).mode,
+            DetectedDeskMode::Standing
+        );
+
+        let sitting = BTreeMap::from([
+            (SHOULDER_ID, Point::new(50.0, 20.0)),
+            (HIP_ID, Point::new(135.0, 36.0)),
+        ]);
+        assert_eq!(
+            estimate_mode_from_landmarks(&sitting).mode,
+            DetectedDeskMode::Sitting
+        );
+    }
+
+    fn test_detection(id: usize, x: f64, y: f64) -> DetectionPoint {
+        DetectionPoint {
+            id,
+            center: Point::new(x, y),
+            corners: [
+                [x - 5.0, y - 5.0],
+                [x + 5.0, y - 5.0],
+                [x + 5.0, y + 5.0],
+                [x - 5.0, y + 5.0],
+            ],
+        }
     }
 }

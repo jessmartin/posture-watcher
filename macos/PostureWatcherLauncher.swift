@@ -122,6 +122,7 @@ final class PostureWatcherLauncher: NSObject, NSApplicationDelegate, AVCaptureVi
     private let previewView = BadgerPreviewView()
     private var cameraPopup: NSPopUpButton?
     private var modePopup: NSPopUpButton?
+    private var autoModeLabel: NSTextField?
     private var badgerStatusLabel: NSTextField?
     private var tagStatusLabel: NSTextField?
     private var selectedCameraName: String?
@@ -154,7 +155,7 @@ final class PostureWatcherLauncher: NSObject, NSApplicationDelegate, AVCaptureVi
 
     private func setupPreviewWindow() {
         let window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 260, height: 750),
+            contentRect: NSRect(x: 0, y: 0, width: 260, height: 785),
             styleMask: [.titled, .closable, .miniaturizable],
             backing: .buffered,
             defer: false
@@ -205,6 +206,24 @@ final class PostureWatcherLauncher: NSObject, NSApplicationDelegate, AVCaptureVi
         modeRow.addArrangedSubview(modeLabel)
         modeRow.addArrangedSubview(mode)
         root.addArrangedSubview(modeRow)
+
+        let detectedRow = NSStackView()
+        detectedRow.orientation = .horizontal
+        detectedRow.alignment = .centerY
+        detectedRow.spacing = 8
+        detectedRow.translatesAutoresizingMaskIntoConstraints = false
+
+        let detectedLabel = NSTextField(labelWithString: "Detected")
+        let detectedMode = NSTextField(labelWithString: "waiting")
+        detectedMode.textColor = .secondaryLabelColor
+        detectedMode.alignment = .left
+        detectedMode.translatesAutoresizingMaskIntoConstraints = false
+        detectedMode.widthAnchor.constraint(equalToConstant: 155).isActive = true
+        autoModeLabel = detectedMode
+
+        detectedRow.addArrangedSubview(detectedLabel)
+        detectedRow.addArrangedSubview(detectedMode)
+        root.addArrangedSubview(detectedRow)
 
         let badgerRow = NSStackView()
         badgerRow.orientation = .horizontal
@@ -387,6 +406,8 @@ final class PostureWatcherLauncher: NSObject, NSApplicationDelegate, AVCaptureVi
     private func showCameraPermissionProblem(_ text: String) {
         tagStatusLabel?.stringValue = "camera blocked"
         tagStatusLabel?.textColor = .systemRed
+        autoModeLabel?.stringValue = "unknown"
+        autoModeLabel?.textColor = .secondaryLabelColor
         previewView.applyDisplayPayload("DISPLAY,M,Camera access needed")
         showMessage(text)
     }
@@ -610,11 +631,12 @@ final class PostureWatcherLauncher: NSObject, NSApplicationDelegate, AVCaptureVi
         savedURLs.append(frameOutURL)
 
         let analysisDir = supportURL.appendingPathComponent("analysis", isDirectory: true)
-        let optionalImages = [
+        let optionalFiles = [
             ("latest-tags.png", "\(stamp)-tags.png"),
-            ("latest-analysis.png", "\(stamp)-analysis.png")
+            ("latest-analysis.png", "\(stamp)-analysis.png"),
+            ("latest-tags.txt", "\(stamp)-tags.txt")
         ]
-        for (inputName, outputName) in optionalImages {
+        for (inputName, outputName) in optionalFiles {
             let inputURL = analysisDir.appendingPathComponent(inputName)
             guard fm.fileExists(atPath: inputURL.path) else { continue }
             let outputURL = sampleDir.appendingPathComponent(outputName)
@@ -699,6 +721,12 @@ final class PostureWatcherLauncher: NSObject, NSApplicationDelegate, AVCaptureVi
             DispatchQueue.main.async {
                 self.applyTagStatus(line)
             }
+            return
+        }
+        if line.hasPrefix("MODE,") {
+            DispatchQueue.main.async {
+                self.applyModeStatus(line)
+            }
         }
     }
 
@@ -723,6 +751,30 @@ final class PostureWatcherLauncher: NSObject, NSApplicationDelegate, AVCaptureVi
             badgerStatusLabel?.stringValue = status
             badgerStatusLabel?.textColor = .secondaryLabelColor
         }
+    }
+
+    private func applyModeStatus(_ line: String) {
+        let parts = line.split(separator: ",", omittingEmptySubsequences: false).map(String.init)
+        guard parts.count >= 3 else { return }
+        let mode = parts[1]
+        let confidence = parts[2]
+        let detail = parts.dropFirst(3).joined(separator: ",")
+
+        switch mode {
+        case "sitting":
+            autoModeLabel?.stringValue = "Sitting \(confidence)%"
+            autoModeLabel?.textColor = .systemGreen
+        case "standing":
+            autoModeLabel?.stringValue = "Standing \(confidence)%"
+            autoModeLabel?.textColor = .systemGreen
+        case "unknown":
+            autoModeLabel?.stringValue = "unknown"
+            autoModeLabel?.textColor = .systemOrange
+        default:
+            autoModeLabel?.stringValue = mode
+            autoModeLabel?.textColor = .secondaryLabelColor
+        }
+        autoModeLabel?.toolTip = detail.isEmpty ? nil : detail
     }
 
     private func applyTagStatus(_ line: String) {
