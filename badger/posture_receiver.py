@@ -96,10 +96,8 @@ def is_usb_bottom(orientation):
 
 
 def transform_point(x, y, orientation):
-    # Keep Badger geometry in the same logical orientation as the macOS
-    # preview. The hardware is already mounted in the desired portrait
-    # direction, so mirroring USB-bottom payloads makes the desk display read
-    # backwards and can push the curve into the status readout.
+    if is_usb_bottom(orientation):
+        return WIDTH - 1 - x, HEIGHT - 1 - y
     return x, y
 
 
@@ -131,7 +129,18 @@ def draw_dashed_line(x1, y1, x2, y2, orientation, dash=9, gap=6):
 
 
 def draw_rect(x, y, w, h, orientation):
+    if is_usb_bottom(orientation):
+        x = WIDTH - x - w
+        y = HEIGHT - y - h
     display.rectangle(x, y, w, h)
+
+
+def flip_curve_point(x, y):
+    return WIDTH - 1 - x, y
+
+
+def curve_points_for_display(points):
+    return [flip_curve_point(x, y) for x, y in points]
 
 
 def pixel_text_width(text, scale):
@@ -231,17 +240,19 @@ def draw_message(message, orientation):
 
 def draw_points(points, note="", orientation=USB_TOP, baseline_points=None, quality_bits=""):
     baseline_points = baseline_points or []
+    curve_points = curve_points_for_display(points)
+    baseline_curve_points = curve_points_for_display(baseline_points)
     clear()
 
     # Portrait mode: place the Badger on its short edge. The body chain uses
     # the 296px axis; forward/back drift uses the 128px axis.
-    if len(baseline_points) > 1:
+    if len(baseline_curve_points) > 1:
         display.thickness(1)
-        for i in range(len(baseline_points) - 1):
-            x1, y1 = baseline_points[i]
-            x2, y2 = baseline_points[i + 1]
+        for i in range(len(baseline_curve_points) - 1):
+            x1, y1 = baseline_curve_points[i]
+            x2, y2 = baseline_curve_points[i + 1]
             draw_dashed_line(x1, y1, x2, y2, orientation)
-        for x, y in baseline_points:
+        for x, y in baseline_curve_points:
             draw_rect(x - 2, y - 2, 5, 5, orientation)
     else:
         cy = HEIGHT // 2
@@ -250,15 +261,15 @@ def draw_points(points, note="", orientation=USB_TOP, baseline_points=None, qual
         draw_line(18, cy - 14, 18, cy + 14, orientation)
         draw_line(WIDTH - 18, cy - 14, WIDTH - 18, cy + 14, orientation)
 
-    if len(points) > 1:
+    if len(curve_points) > 1:
         display.thickness(4)
-        for i in range(len(points) - 1):
-            x1, y1 = points[i]
-            x2, y2 = points[i + 1]
+        for i in range(len(curve_points) - 1):
+            x1, y1 = curve_points[i]
+            x2, y2 = curve_points[i + 1]
             draw_line(x1, y1, x2, y2, orientation)
 
     display.thickness(1)
-    for x, y in points:
+    for x, y in curve_points:
         draw_rect(x - 3, y - 3, 7, 7, orientation)
 
     if note:
