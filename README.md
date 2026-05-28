@@ -10,7 +10,7 @@ Posture Watcher is a small end-to-end posture feedback loop:
 The goal is not to nag on every frame. The app samples slowly, averages over a rolling window, and refuses to show a posture curve when the markers are visible but anatomically implausible.
 
 <p align="center">
-  <img src="docs/screenshots/live-posture-line.jpg" width="420" alt="Live posture debug image with AprilTags and the superimposed posture line">
+  <img src="docs/screenshots/live-posture-line.png" width="420" alt="Live posture debug image with labeled AprilTags and the superimposed posture line">
 </p>
 
 ## Current State
@@ -28,9 +28,9 @@ The remaining calibration work is physical: place the tags on the actual landmar
 
 ## Gallery
 
-| Live debug overlay | macOS app tracking |
+| Live debug overlay | macOS app window |
 | --- | --- |
-| <img src="docs/screenshots/live-posture-line.jpg" width="360" alt="Live posture debug image with AprilTags and the superimposed posture line"> | <img src="docs/screenshots/posture-watcher-app-live.png" width="240" alt="Posture Watcher macOS app showing ready tags, good placement, and the mirrored Badger curve"> |
+| <img src="docs/screenshots/live-posture-line.png" width="360" alt="Live posture debug image with labeled AprilTags and the superimposed posture line"> | <img src="docs/screenshots/posture-watcher-app-live.png" width="300" alt="Posture Watcher macOS app window showing ready tags, good placement, labeled points, and the mirrored Badger curve"> |
 
 | Badger in action | Wearing the tags |
 | --- | --- |
