@@ -7,6 +7,8 @@ import badger2040
 PROTOCOL = "POSTURE_WATCHER_BADGER_V2"
 WIDTH = badger2040.WIDTH
 HEIGHT = badger2040.HEIGHT
+SCREEN_WIDTH = HEIGHT
+SCREEN_HEIGHT = WIDTH
 USB_TOP = "T"
 USB_BOTTOM = "B"
 
@@ -20,14 +22,14 @@ def clear():
     display.pen(0)
 
 
-def draw_waiting():
+def draw_waiting(orientation=USB_BOTTOM):
     clear()
     display.thickness(1)
-    cy = HEIGHT // 2
-    display.line(18, cy, WIDTH - 18, cy)
-    display.line(18, cy - 10, 18, cy + 10)
-    display.line(WIDTH - 18, cy - 10, WIDTH - 18, cy + 10)
-    draw_centered_text("WAITING", 52, 3, USB_TOP)
+    cy = SCREEN_HEIGHT // 2
+    draw_screen_line(18, cy, SCREEN_WIDTH - 18, cy, orientation)
+    draw_screen_line(18, cy - 10, 18, cy + 10, orientation)
+    draw_screen_line(SCREEN_WIDTH - 18, cy - 10, SCREEN_WIDTH - 18, cy + 10, orientation)
+    draw_screen_centered_text("WAITING", cy - 11, 3, orientation)
     display.update()
 
 
@@ -95,15 +97,27 @@ def is_usb_bottom(orientation):
     return orientation == USB_BOTTOM
 
 
-def transform_point(x, y, orientation):
+def screen_point_to_raw(x, y, orientation):
+    # Screen coordinates are the visible portrait display: x goes across the
+    # short 128px axis and y goes down the long 296px axis.
     if is_usb_bottom(orientation):
-        return WIDTH - 1 - x, HEIGHT - 1 - y
-    return x, y
+        return WIDTH - 1 - y, x
+    return y, HEIGHT - 1 - x
+
+
+def curve_point_to_raw(x, y, orientation):
+    return screen_point_to_raw(y, x, orientation)
 
 
 def draw_line(x1, y1, x2, y2, orientation):
-    x1, y1 = transform_point(x1, y1, orientation)
-    x2, y2 = transform_point(x2, y2, orientation)
+    x1, y1 = curve_point_to_raw(x1, y1, orientation)
+    x2, y2 = curve_point_to_raw(x2, y2, orientation)
+    display.line(x1, y1, x2, y2)
+
+
+def draw_screen_line(x1, y1, x2, y2, orientation):
+    x1, y1 = screen_point_to_raw(x1, y1, orientation)
+    x2, y2 = screen_point_to_raw(x2, y2, orientation)
     display.line(x1, y1, x2, y2)
 
 
@@ -129,18 +143,14 @@ def draw_dashed_line(x1, y1, x2, y2, orientation, dash=9, gap=6):
 
 
 def draw_rect(x, y, w, h, orientation):
+    draw_screen_rect(y, x, h, w, orientation)
+
+
+def draw_screen_rect(x, y, w, h, orientation):
     if is_usb_bottom(orientation):
-        x = WIDTH - x - w
-        y = HEIGHT - y - h
-    display.rectangle(x, y, w, h)
-
-
-def flip_curve_point(x, y):
-    return WIDTH - 1 - x, y
-
-
-def curve_points_for_display(points):
-    return [flip_curve_point(x, y) for x, y in points]
+        display.rectangle(WIDTH - y - h, x, h, w)
+    else:
+        display.rectangle(y, HEIGHT - x - w, h, w)
 
 
 def pixel_text_width(text, scale):
@@ -150,7 +160,7 @@ def pixel_text_width(text, scale):
     return max(0, width - scale)
 
 
-def draw_pixel_text(text, x, y, scale, orientation):
+def draw_screen_pixel_text(text, x, y, scale, orientation):
     cursor = x
     for char in text:
         if char == " ":
@@ -160,13 +170,19 @@ def draw_pixel_text(text, x, y, scale, orientation):
         for row, cells in enumerate(glyph):
             for col, cell in enumerate(cells):
                 if cell == "1":
-                    draw_rect(cursor + col * scale, y + row * scale, scale, scale, orientation)
+                    draw_screen_rect(
+                        cursor + col * scale,
+                        y + row * scale,
+                        scale,
+                        scale,
+                        orientation,
+                    )
         cursor += 6 * scale
 
 
-def draw_centered_text(text, y, scale, orientation):
-    x = max(8, (WIDTH - pixel_text_width(text, scale)) // 2)
-    draw_pixel_text(text, x, y, scale, orientation)
+def draw_screen_centered_text(text, y, scale, orientation):
+    x = max(4, (SCREEN_WIDTH - pixel_text_width(text, scale)) // 2)
+    draw_screen_pixel_text(text, x, y, scale, orientation)
 
 
 def draw_quality_strip(bits, orientation):
@@ -184,14 +200,14 @@ def draw_quality_strip(bits, orientation):
 
 
 def draw_border(orientation):
-    draw_line(0, 0, WIDTH - 1, 0, orientation)
-    draw_line(0, HEIGHT - 1, WIDTH - 1, HEIGHT - 1, orientation)
-    draw_line(0, 0, 0, HEIGHT - 1, orientation)
-    draw_line(WIDTH - 1, 0, WIDTH - 1, HEIGHT - 1, orientation)
-    draw_line(5, 5, WIDTH - 6, 5, orientation)
-    draw_line(5, HEIGHT - 6, WIDTH - 6, HEIGHT - 6, orientation)
-    draw_line(5, 5, 5, HEIGHT - 6, orientation)
-    draw_line(WIDTH - 6, 5, WIDTH - 6, HEIGHT - 6, orientation)
+    draw_screen_line(0, 0, SCREEN_WIDTH - 1, 0, orientation)
+    draw_screen_line(0, SCREEN_HEIGHT - 1, SCREEN_WIDTH - 1, SCREEN_HEIGHT - 1, orientation)
+    draw_screen_line(0, 0, 0, SCREEN_HEIGHT - 1, orientation)
+    draw_screen_line(SCREEN_WIDTH - 1, 0, SCREEN_WIDTH - 1, SCREEN_HEIGHT - 1, orientation)
+    draw_screen_line(5, 5, SCREEN_WIDTH - 6, 5, orientation)
+    draw_screen_line(5, SCREEN_HEIGHT - 6, SCREEN_WIDTH - 6, SCREEN_HEIGHT - 6, orientation)
+    draw_screen_line(5, 5, 5, SCREEN_HEIGHT - 6, orientation)
+    draw_screen_line(SCREEN_WIDTH - 6, 5, SCREEN_WIDTH - 6, SCREEN_HEIGHT - 6, orientation)
 
 
 def message_lines(message):
@@ -223,36 +239,36 @@ def message_lines(message):
 
 def draw_message(message, orientation):
     lines = message_lines(message)
-    scale = 4 if len(lines) <= 2 else 3
+    scale = 2
+    if max([pixel_text_width(line, scale) for line in lines] or [0]) > SCREEN_WIDTH - 8:
+        scale = 1
     line_height = 7 * scale
-    line_gap = 10 if len(lines) <= 2 else 7
+    line_gap = 8
     block_height = len(lines) * line_height + (len(lines) - 1) * line_gap
-    top = max(10, (HEIGHT - block_height) // 2)
+    top = max(10, (SCREEN_HEIGHT - block_height) // 2)
 
     clear()
     display.thickness(3)
     draw_border(orientation)
     display.thickness(2)
     for i, line in enumerate(lines):
-        draw_centered_text(line, top + i * (line_height + line_gap), scale, orientation)
+        draw_screen_centered_text(line, top + i * (line_height + line_gap), scale, orientation)
     display.update()
 
 
 def draw_points(points, note="", orientation=USB_TOP, baseline_points=None, quality_bits=""):
     baseline_points = baseline_points or []
-    curve_points = curve_points_for_display(points)
-    baseline_curve_points = curve_points_for_display(baseline_points)
     clear()
 
     # Portrait mode: place the Badger on its short edge. The body chain uses
     # the 296px axis; forward/back drift uses the 128px axis.
-    if len(baseline_curve_points) > 1:
+    if len(baseline_points) > 1:
         display.thickness(1)
-        for i in range(len(baseline_curve_points) - 1):
-            x1, y1 = baseline_curve_points[i]
-            x2, y2 = baseline_curve_points[i + 1]
+        for i in range(len(baseline_points) - 1):
+            x1, y1 = baseline_points[i]
+            x2, y2 = baseline_points[i + 1]
             draw_dashed_line(x1, y1, x2, y2, orientation)
-        for x, y in baseline_curve_points:
+        for x, y in baseline_points:
             draw_rect(x - 2, y - 2, 5, 5, orientation)
     else:
         cy = HEIGHT // 2
@@ -261,19 +277,19 @@ def draw_points(points, note="", orientation=USB_TOP, baseline_points=None, qual
         draw_line(18, cy - 14, 18, cy + 14, orientation)
         draw_line(WIDTH - 18, cy - 14, WIDTH - 18, cy + 14, orientation)
 
-    if len(curve_points) > 1:
+    if len(points) > 1:
         display.thickness(4)
-        for i in range(len(curve_points) - 1):
-            x1, y1 = curve_points[i]
-            x2, y2 = curve_points[i + 1]
+        for i in range(len(points) - 1):
+            x1, y1 = points[i]
+            x2, y2 = points[i + 1]
             draw_line(x1, y1, x2, y2, orientation)
 
     display.thickness(1)
-    for x, y in curve_points:
+    for x, y in points:
         draw_rect(x - 3, y - 3, 7, 7, orientation)
 
     if note:
-        draw_pixel_text(note[:14].upper(), 8, 8, 2, orientation)
+        draw_screen_pixel_text(note[:14].upper(), 8, 8, 2, orientation)
 
     display.thickness(1)
     draw_quality_strip(quality_bits, orientation)
@@ -350,18 +366,11 @@ def ack(message):
         pass
 
 
-draw_waiting()
-ack("READY," + PROTOCOL)
-
-while True:
-    line = sys.stdin.readline()
-    if not line:
-        time.sleep(0.05)
-        continue
+def handle_line(line):
     line = line.strip()
     if line == "PING":
         ack("OK," + PROTOCOL)
-        continue
+        return
     kind, orientation, points, baseline_points, quality_bits, note = parse_payload(line)
     if kind == "M":
         draw_message(note, orientation)
@@ -371,3 +380,19 @@ while True:
         ack("OK,P,{}".format(len(points)))
     else:
         ack("ERR,BAD_PAYLOAD")
+
+
+def main():
+    draw_waiting()
+    ack("READY," + PROTOCOL)
+
+    while True:
+        line = sys.stdin.readline()
+        if not line:
+            time.sleep(0.05)
+            continue
+        handle_line(line)
+
+
+if __name__ == "__main__":
+    main()

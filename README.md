@@ -45,6 +45,7 @@ The remaining calibration work is physical: place the tags on the actual landmar
 | Hardware | Badger2040 display | Sends the same posture feedback to a USB-connected Badger2040 in portrait orientation. |
 | Hardware | USB orientation setting | Supports Badger USB-C at the top or bottom. |
 | Debugging | Labeled overlays | Writes labeled debug images and labels points in the macOS preview. |
+| Debugging | Badger framebuffer renderer | Renders the exact Badger receiver framebuffer from the latest app payload without aiming a camera at the e-ink screen. |
 | Debugging | Sample capture | Saves raw frames, debug overlays, and tag reports for calibration and review. |
 | Setup | Installable app | Installs `/Applications/Posture Watcher.app` with optional launch-at-login scripts. |
 | Recovery | Badger backup/restore | Backs up the Badger `main.py` before installing the receiver and can restore it later. |
@@ -391,6 +392,14 @@ Run the sample sequence and send curves to the Badger:
 
 ```sh
 cargo run -- run-samples --send-badger
+```
+
+Render what the Badger should be showing from the latest app payload:
+
+```sh
+scripts/render-badger-display.py \
+  --out artifacts/badger-debug/latest-mounted.png \
+  --raw-out artifacts/badger-debug/latest-raw.png
 ```
 
 Run direct live capture from the CLI:
