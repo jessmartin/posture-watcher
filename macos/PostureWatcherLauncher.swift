@@ -160,6 +160,7 @@ final class BadgerPreviewView: NSView {
             NSBezierPath(rect: CGRect(x: center.x - 4, y: center.y - 4, width: 8, height: 8)).fill()
         }
 
+        drawPointLabels(points: points, origin: origin, displayRect: displayRect, scale: scale)
         drawQualityStrip(origin: origin, scale: scale)
 
         if !note.isEmpty {
@@ -168,6 +169,38 @@ final class BadgerPreviewView: NSView {
                 .foregroundColor: NSColor.black
             ]
             note.draw(at: CGPoint(x: displayRect.minX + 8, y: displayRect.minY + 8), withAttributes: attrs)
+        }
+    }
+
+    private func drawPointLabels(points: [CGPoint], origin: CGPoint, displayRect: CGRect, scale: CGFloat) {
+        let labels = pointLabels(count: points.count)
+        guard labels.count == points.count else { return }
+        let attrs: [NSAttributedString.Key: Any] = [
+            .font: NSFont.monospacedSystemFont(ofSize: 8.5, weight: .semibold),
+            .foregroundColor: NSColor.black
+        ]
+        for (point, label) in zip(points, labels) {
+            let center = CGPoint(x: origin.x + point.y * scale, y: origin.y + point.x * scale)
+            let size = label.size(withAttributes: attrs)
+            var x = center.x + 7
+            var y = center.y - size.height / 2
+            x = min(max(x, displayRect.minX + 3), displayRect.maxX - size.width - 3)
+            y = min(max(y, displayRect.minY + 3), displayRect.maxY - size.height - 3)
+            let background = CGRect(x: x - 2, y: y - 1, width: size.width + 4, height: size.height + 2)
+            NSColor.white.withAlphaComponent(0.82).setFill()
+            NSBezierPath(rect: background).fill()
+            label.draw(at: CGPoint(x: x, y: y), withAttributes: attrs)
+        }
+    }
+
+    private func pointLabels(count: Int) -> [String] {
+        switch count {
+        case 4:
+            return ["HIP", "SHOULDER", "C7", "EAR"]
+        case 3:
+            return ["SHOULDER", "C7", "EAR"]
+        default:
+            return []
         }
     }
 
@@ -904,17 +937,36 @@ final class PostureWatcherLauncher: NSObject, NSApplicationDelegate, AVCaptureVi
 
     private func debugFrameURL() throws -> URL {
         let supportURL = try appSupportURL()
+        let analysisURL = supportURL
+            .appendingPathComponent("analysis", isDirectory: true)
+            .appendingPathComponent("latest-analysis.png")
         let tagDebugURL = supportURL
             .appendingPathComponent("analysis", isDirectory: true)
             .appendingPathComponent("latest-tags.png")
-        if FileManager.default.fileExists(atPath: tagDebugURL.path) {
-            return tagDebugURL
+        if let latestDebug = newestExistingURL([analysisURL, tagDebugURL]) {
+            return latestDebug
         }
         let frameURL = supportURL.appendingPathComponent("latest-frame.jpg")
         if FileManager.default.fileExists(atPath: frameURL.path) {
             return frameURL
         }
         throw AppError.message("No camera frame has been captured yet.")
+    }
+
+    private func newestExistingURL(_ urls: [URL]) -> URL? {
+        let fm = FileManager.default
+        return urls
+            .compactMap { url -> (URL, Date)? in
+                guard fm.fileExists(atPath: url.path),
+                      let values = try? url.resourceValues(forKeys: [.contentModificationDateKey]),
+                      let modified = values.contentModificationDate
+                else {
+                    return nil
+                }
+                return (url, modified)
+            }
+            .max { lhs, rhs in lhs.1 < rhs.1 }?
+            .0
     }
 
     private func saveCurrentSample() throws -> [URL] {

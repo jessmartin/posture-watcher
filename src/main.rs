@@ -2229,6 +2229,9 @@ fn write_debug_image(
             Rgba([0, 255, 80, 255]),
         );
     }
+    for det in detections {
+        draw_detection_label(&mut canvas, det);
+    }
     canvas
         .save(out)
         .with_context(|| format!("writing {}", out.display()))?;
@@ -2251,10 +2254,136 @@ fn write_tag_debug_image(
             Rgba([255, 0, 0, 255]),
         );
     }
+    for det in detections {
+        draw_detection_label(&mut canvas, det);
+    }
     canvas
         .save(out)
         .with_context(|| format!("writing {}", out.display()))?;
     Ok(())
+}
+
+fn draw_detection_label(canvas: &mut RgbaImage, det: &DetectionPoint) {
+    let label = tag_short_label(det.id).to_ascii_uppercase();
+    draw_bitmap_label(canvas, &label, det.center);
+}
+
+fn draw_bitmap_label(canvas: &mut RgbaImage, label: &str, point: Point) {
+    let scale = ((canvas.width().min(canvas.height()) / 360).clamp(2, 5)) as i32;
+    let padding = scale * 2;
+    let text_width = bitmap_text_width(label, scale);
+    let text_height = 7 * scale;
+    let box_width = text_width + padding * 2;
+    let box_height = text_height + padding * 2;
+    let image_width = canvas.width() as i32;
+    let image_height = canvas.height() as i32;
+    let point_x = point.x.round() as i32;
+    let point_y = point.y.round() as i32;
+    let mut x = point_x + 12;
+    if x + box_width >= image_width {
+        x = point_x - box_width - 12;
+    }
+    let mut y = point_y - box_height / 2;
+    x = x.clamp(0, (image_width - box_width).max(0));
+    y = y.clamp(0, (image_height - box_height).max(0));
+
+    draw_filled_rect_mut(
+        canvas,
+        Rect::at(x, y).of_size(box_width.max(1) as u32, box_height.max(1) as u32),
+        Rgba([0, 0, 0, 210]),
+    );
+    draw_bitmap_text(
+        canvas,
+        label,
+        x + padding,
+        y + padding,
+        scale,
+        Rgba([255, 255, 255, 255]),
+    );
+}
+
+fn bitmap_text_width(text: &str, scale: i32) -> i32 {
+    text.chars()
+        .map(|ch| if ch == ' ' { 4 * scale } else { 6 * scale })
+        .sum::<i32>()
+        .saturating_sub(scale)
+}
+
+fn draw_bitmap_text(
+    canvas: &mut RgbaImage,
+    text: &str,
+    x: i32,
+    y: i32,
+    scale: i32,
+    color: Rgba<u8>,
+) {
+    let mut cursor = x;
+    for ch in text.chars() {
+        if ch == ' ' {
+            cursor += 4 * scale;
+            continue;
+        }
+        if let Some(glyph) = bitmap_glyph(ch) {
+            for (row, cells) in glyph.iter().enumerate() {
+                for (col, cell) in cells.as_bytes().iter().enumerate() {
+                    if *cell == b'1' {
+                        draw_filled_rect_mut(
+                            canvas,
+                            Rect::at(cursor + col as i32 * scale, y + row as i32 * scale)
+                                .of_size(scale as u32, scale as u32),
+                            color,
+                        );
+                    }
+                }
+            }
+        }
+        cursor += 6 * scale;
+    }
+}
+
+fn bitmap_glyph(ch: char) -> Option<[&'static str; 7]> {
+    match ch {
+        'A' => Some([
+            "01110", "10001", "10001", "11111", "10001", "10001", "10001",
+        ]),
+        'C' => Some([
+            "01111", "10000", "10000", "10000", "10000", "10000", "01111",
+        ]),
+        'D' => Some([
+            "11110", "10001", "10001", "10001", "10001", "10001", "11110",
+        ]),
+        'E' => Some([
+            "11111", "10000", "10000", "11110", "10000", "10000", "11111",
+        ]),
+        'H' => Some([
+            "10001", "10001", "10001", "11111", "10001", "10001", "10001",
+        ]),
+        'I' => Some([
+            "11111", "00100", "00100", "00100", "00100", "00100", "11111",
+        ]),
+        'L' => Some([
+            "10000", "10000", "10000", "10000", "10000", "10000", "11111",
+        ]),
+        'O' => Some([
+            "01110", "10001", "10001", "10001", "10001", "10001", "01110",
+        ]),
+        'P' => Some([
+            "11110", "10001", "10001", "11110", "10000", "10000", "10000",
+        ]),
+        'R' => Some([
+            "11110", "10001", "10001", "11110", "10100", "10010", "10001",
+        ]),
+        'S' => Some([
+            "01111", "10000", "10000", "01110", "00001", "00001", "11110",
+        ]),
+        'U' => Some([
+            "10001", "10001", "10001", "10001", "10001", "10001", "01110",
+        ]),
+        '7' => Some([
+            "11111", "00001", "00010", "00100", "01000", "01000", "01000",
+        ]),
+        _ => None,
+    }
 }
 
 fn write_tag_report(
