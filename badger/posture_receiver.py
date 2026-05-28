@@ -96,8 +96,10 @@ def is_usb_bottom(orientation):
 
 
 def transform_point(x, y, orientation):
-    if is_usb_bottom(orientation):
-        return WIDTH - 1 - x, HEIGHT - 1 - y
+    # Keep Badger geometry in the same logical orientation as the macOS
+    # preview. The hardware is already mounted in the desired portrait
+    # direction, so mirroring USB-bottom payloads makes the desk display read
+    # backwards and can push the curve into the status readout.
     return x, y
 
 
@@ -129,9 +131,6 @@ def draw_dashed_line(x1, y1, x2, y2, orientation, dash=9, gap=6):
 
 
 def draw_rect(x, y, w, h, orientation):
-    if is_usb_bottom(orientation):
-        x = WIDTH - x - w
-        y = HEIGHT - y - h
     display.rectangle(x, y, w, h)
 
 
