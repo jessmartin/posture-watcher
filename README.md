@@ -26,6 +26,29 @@ The live loop is working with the plugged-in Logitech C930e and Badger2040:
 
 The remaining calibration work is physical: place the tags on the actual landmarks, collect sitting and standing samples, then tune the sitting/standing and placement heuristics against those examples.
 
+## Features
+
+| Area | Feature | What It Does |
+| --- | --- | --- |
+| Capture | Native macOS app | Owns Camera permission, camera selection, live capture, and the daily app workflow. |
+| Capture | Sideways webcam support | Defaults to 90 degree counter-clockwise rotation for the C930e mounted vertically. |
+| Markers | Printable AprilTags | Generates ear, C7, shoulder, and hip tags from the `tag36h11` family. |
+| Markers | C7 flag workflow | Includes a foldable C7 flag template and anchor correction for a side-facing neck marker. |
+| Detection | Burst sampling | Checks several recent frames per update so one blurry or occluded frame does not dominate. |
+| Detection | Marker fusion | Combines the strongest observations across the burst before calculating posture. |
+| Posture | Rolling average curve | Displays the long-window posture trend instead of a twitchy frame-by-frame warning. |
+| Posture | Sitting/standing modes | Supports Auto, Sitting, and Standing modes with separate rolling windows and baselines. |
+| Calibration | Personal baselines | Builds sitting and standing baselines from saved good samples. |
+| Feedback | Baseline comparison | Shows the live curve against a dashed calibrated baseline rather than a generic straight line. |
+| Feedback | Quality strip | Shows recent valid/missed samples as a compact strip on the app and Badger display. |
+| Feedback | Placement warnings | Reports missing or implausible markers with actions like `Aim C7 flag` or `Move ear tag up`. |
+| Hardware | Badger2040 display | Sends the same posture feedback to a USB-connected Badger2040 in portrait orientation. |
+| Hardware | USB orientation setting | Supports Badger USB-C at the top or bottom. |
+| Debugging | Labeled overlays | Writes labeled debug images and labels points in the macOS preview. |
+| Debugging | Sample capture | Saves raw frames, debug overlays, and tag reports for calibration and review. |
+| Setup | Installable app | Installs `/Applications/Posture Watcher.app` with optional launch-at-login scripts. |
+| Recovery | Badger backup/restore | Backs up the Badger `main.py` before installing the receiver and can restore it later. |
+
 ## Gallery
 
 | Live debug overlay | macOS app window |
