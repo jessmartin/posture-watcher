@@ -84,14 +84,20 @@ cargo run -- install-badger
 
 The installer backs up the current Badger `main.py` into `artifacts/badger-backups/`.
 
-Build and launch the macOS app:
+Build and install the macOS app:
 
 ```sh
-scripts/build-macos-app.sh
-open "target/macos/Posture Watcher.app"
+POSTURE_WATCHER_INSTALL_DIR=/Applications scripts/install-macos-app.sh --open
 ```
 
-macOS should prompt for Camera permission as `Posture Watcher`. The app is the preferred daily entry point because it owns the Camera permission flow and feeds captured frames to the bundled Rust analyzer.
+The installer builds `target/macos/Posture Watcher.app`, copies it to `/Applications/Posture Watcher.app`, removes quarantine metadata, and opens the installed copy. macOS should prompt for Camera permission as `Posture Watcher`. The app is the preferred daily entry point because it owns the Camera permission flow and feeds captured frames to the bundled Rust analyzer.
+
+Launch at login is optional:
+
+```sh
+POSTURE_WATCHER_INSTALL_DIR=/Applications scripts/install-macos-app.sh --launch-at-login
+scripts/disable-launch-at-login.sh
+```
 
 ## Daily Loop
 
@@ -110,7 +116,7 @@ macOS should prompt for Camera permission as `Posture Watcher`. The app is the p
    - `tag36h11-2`: shoulder / acromion
    - `tag36h11-3`: hip / belt marker, optional but useful for sitting/standing
 
-3. Launch the app and check the status rows:
+3. Launch `/Applications/Posture Watcher.app` and check the status rows:
 
    - `Badger connected` means the e-ink receiver is ACKing payloads.
    - `Tags ready` means the required tags are visible.
